@@ -65,3 +65,16 @@ select{width:100%;padding:12px;margin:8px 0 13px;border:2px solid #181818;border
 .projector-feed .post-caption{font-size:clamp(15px,1.4vw,22px)}
 .projector-feed .post-media img,.projector-feed .post-media video{width:100%;max-height:360px;margin:0;object-fit:contain}
 @media(max-width:600px){.post-header{padding:12px 12px 8px}.post-caption{padding:0 12px}.post-actions{padding:9px 12px}.post .comment-compose{padding:9px 12px 12px}}
+
+/* Final reveal */
+.winner-celebration{position:relative;overflow:hidden;text-align:center;padding:clamp(28px,7vw,90px) 20px;background:#E8F35A;color:#181818;border:4px solid #181818;box-shadow:12px 12px 0 #2855ED;animation:winner-reveal .7s cubic-bezier(.2,.8,.2,1) both;margin:18px 0 34px}
+.winner-celebration h1{font-size:clamp(44px,9vw,116px);line-height:1.02;overflow-wrap:anywhere;text-transform:uppercase;margin:16px 0;text-shadow:4px 4px 0 #fff}
+.winner-celebration h2{font-size:clamp(18px,3vw,38px);margin:12px 0}
+.winner-celebration p{font-weight:900;letter-spacing:.06em}
+.winner-eyebrow{font-weight:900;letter-spacing:.16em;font-size:clamp(12px,2vw,21px)}
+.winner-crown{font-size:clamp(55px,10vw,120px);animation:winner-bounce 1.5s ease-in-out infinite}
+.winner-confetti{font-size:clamp(24px,5vw,54px);letter-spacing:.3em;color:#2855ED;white-space:nowrap;animation:winner-sparkle 2.5s ease-in-out infinite}
+@keyframes winner-reveal{from{opacity:0;transform:scale(.85) rotate(-2deg)}to{opacity:1;transform:scale(1) rotate(0)}}
+@keyframes winner-bounce{0%,100%{transform:translateY(0) rotate(-6deg)}50%{transform:translateY(-12px) rotate(6deg)}}
+@keyframes winner-sparkle{0%,100%{opacity:.6;transform:scale(.96)}50%{opacity:1;transform:scale(1.04)}}
+@media(prefers-reduced-motion:reduce){.winner-celebration,.winner-crown,.winner-confetti{animation:none}}
