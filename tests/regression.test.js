@@ -46,3 +46,5 @@ test('photo souvenir download is available before media cleanup',()=>{
  assert.match(client,/SAVE MY BEST POST/);
  assert.match(client,/canvas\.toDataURL\('image\/png'\)/);
 });
+
+test('third low-engagement post never displaces earlier popular posts',()=>{const popular=post(0,['player-b','player-c']),second=post(0,['player-d']),third=post(0);const before=stats({posts:[second,popular]},owner).followers;const after=stats({posts:[third,second,popular]},owner).followers;assert.equal(after,before);});
