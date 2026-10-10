@@ -35,3 +35,33 @@ select{width:100%;padding:12px;margin:8px 0 13px;border:2px solid #181818;border
 .projector-rank{display:flex;flex-direction:column;border-bottom:1px solid #18181844;padding:8px 0;gap:3px}
 .projector-rank b{font-size:clamp(13px,1.2vw,19px)}
 .projector-rank span{font-size:clamp(11px,1vw,16px)}
+
+/* Social feed: readable, consistent posts across phone and projector */
+.feed{display:flex;flex-direction:column;gap:14px;max-width:620px;margin:0 auto}
+.post{background:#fff;border:1.5px solid #181818;border-radius:12px;overflow:hidden;overflow-wrap:anywhere;box-shadow:2px 3px 0 #181818}
+.post-header{display:flex;align-items:center;gap:10px;padding:14px 15px 10px}
+.post-avatar{width:42px;height:42px;flex:none;border:2px solid #181818;border-radius:50%;background:#E8F35A;display:grid;place-items:center;font-size:20px;font-weight:900}
+.post-identity{display:flex;flex-direction:column;min-width:0;gap:3px}
+.post-identity strong{font-size:15px;line-height:1.15}
+.post-identity span{font-size:12px;color:#666}
+.official-label{margin-left:auto;font-size:10px;letter-spacing:1px;font-weight:900;color:#2855ED}
+.post-caption{padding:0 15px;margin:6px 0 14px;white-space:pre-wrap;font-size:15px;line-height:1.5}
+.post-media{background:#f2f1ed;display:flex;align-items:center;justify-content:center}
+.post-media img,.post-media video{display:block;width:100%;height:auto;max-height:540px;object-fit:contain;margin:0;border-radius:0}
+.post-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 14px;border-top:1px solid #e8e8e8}
+.social-action{display:inline-flex;align-items:center;gap:6px;background:transparent;color:#181818;border:0;box-shadow:none;margin:0;padding:3px 5px;font-size:24px;line-height:1;font-weight:800}
+.social-action span{font-size:13px}
+.social-action.liked{color:#e12b5a}
+.social-action:focus-visible{outline:2px solid #2855ED}
+.social-count{font-size:12px;color:#555}
+.post .comments{margin:0 14px;padding:4px 0 8px}
+.post .comment{margin:5px 0;border-radius:8px;font-size:13px}
+.post .comment-compose{padding:9px 14px 14px;margin:0;border-top:1px solid #eee}
+.post .comment-compose input{border:1px solid #bbb;border-radius:18px;padding:10px 12px;font-size:13px}
+.post .comment-compose button{box-shadow:none;border-radius:18px;padding:9px 12px}
+.official-post .post-avatar{background:#2855ED;color:white}
+.projector-feed .feed{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));max-width:none;gap:14px}
+.projector-feed .post{font-size:inherit;margin:0;text-align:left;align-self:start}
+.projector-feed .post-caption{font-size:clamp(15px,1.4vw,22px)}
+.projector-feed .post-media img,.projector-feed .post-media video{width:100%;max-height:360px;margin:0;object-fit:contain}
+@media(max-width:600px){.post-header{padding:12px 12px 8px}.post-caption{padding:0 12px}.post-actions{padding:9px 12px}.post .comment-compose{padding:9px 12px 12px}}
