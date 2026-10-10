@@ -2,7 +2,7 @@ const express=require('express'),http=require('http'),{Server}=require('socket.i
 const app=express(),server=http.createServer(app),io=new Server(server,{maxHttpBufferSize:12e6});
 app.use(express.static(path.join(__dirname,'public')));app.use(express.json());
 const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:8*1024*1024},fileFilter:(req,f,cb)=>{const allowed=/^(image\/(jpeg|png|webp|gif)|video\/(mp4|webm|quicktime))$/.test(f.mimetype);cb(allowed?null:new Error('Unsupported file type'),allowed);}});
-const MAX_MEDIA_BYTES=900*1024*1024; // per-room safety cap; Supabase Free storage is shared across rooms
+const MAX_MEDIA_BYTES=250*1024*1024; // per-room safety cap; Supabase Free storage is shared across rooms
 
 const SB_URL=(()=>{try{const raw=(process.env.SUPABASE_URL||'').trim();const u=new URL(raw);if(u.protocol!=='https:'||!u.hostname.endsWith('.supabase.co'))throw Error('Invalid Supabase project URL');return u.origin;}catch(e){console.error('Invalid SUPABASE_URL configuration:',e.message);return '';}})();
 const SB_KEY=process.env.SUPABASE_SERVICE_ROLE_KEY||'';
@@ -38,6 +38,12 @@ async function restoreRooms(){
 }
 // Permanently remove all uploaded media for a finished or expired room.
 const cleaningRooms=new Set();
+const uploadReservations=new Map();
+const GLOBAL_MEDIA_BUDGET=900*1024*1024; // Leave at least 100 MB of the Free 1 GB allowance unused.
+function reservedBytes(code){return uploadReservations.get(code)||0;}
+function totalMediaBytes(){return [...rooms.values()].reduce((sum,room)=>sum+(room.mediaBytes||0)+reservedBytes(room.code),0);}
+function postEngagement(post,owner){const likes=new Set((post.likes||[]).filter(id=>id!==owner.id&&id!==owner.token)).size;const comments=new Set((post.comments||[]).map(c=>c.playerId).filter(id=>id&&id!==owner.id)).size;return Math.min(20,likes)*80+Math.min(20,comments)*30;}
+
 async function deleteRoomMedia(code){
  if(!PERSIST)return;
  for(let batch=0;batch<10000;batch++){
@@ -93,7 +99,7 @@ const POST_PROMPTS=["Post a behind-the-scenes update about your influencer routi
 function makePostPrompts(duration,mode='quick'){return ['Write your first introduction post. Tell the feed who you are, what you post about, and why people should follow you.',...[...POST_PROMPTS].sort(()=>Math.random()-.5).slice(0,mode==='event'?Math.ceil(duration/30)-1:duration/5)];}
 const PERSONAS=['Beauty Guru','Wellness Expert','Lifestyle Influencer','Fitness Personality','Family Vlogger','Luxury Influencer','Conspiracy Creator','Aspiring Celebrity'];
 const BASE={followers:100,credibility:50,earnings:0,notoriety:0};
-function stats(r,p){const posts=r.posts.filter(x=>x.owner===p.id||x.owner===p.token),scoredPosts=posts.filter((post,i)=>posts.slice(0,i).filter(x=>x.challengeRound===post.challengeRound).length<2),likes=scoredPosts.reduce((n,x)=>n+Math.min(20,new Set((x.likes||[]).filter(id=>id!==p.id&&id!==p.token)).size),0),comments=scoredPosts.reduce((n,x)=>n+Math.min(20,new Set((x.comments||[]).map(c=>c.playerId).filter(id=>id&&id!==p.id)).size),0);return {followers:Math.max(0,100+scoredPosts.length*40+likes*80+comments*30+(p.bonus?.followers||0)),credibility:Math.max(0,Math.min(100,50+likes*3+comments-scoredPosts.length*2+(p.bonus?.credibility||0))),earnings:Math.max(0,scoredPosts.length*25+likes*15+comments*5+(p.bonus?.earnings||0)),notoriety:Math.max(0,scoredPosts.length*5+likes*4+comments*2+(p.bonus?.notoriety||0))};}
+function stats(r,p){const posts=r.posts.filter(x=>x.owner===p.id||x.owner===p.token),groups=new Map();for(const post of posts){const round=post.challengeRound??-1;if(!groups.has(round))groups.set(round,[]);groups.get(round).push(post);}const scoredPosts=[...groups.values()].flatMap(group=>group.sort((a,b)=>postEngagement(b,p)-postEngagement(a,p)||(a.created||0)-(b.created||0)).slice(0,2)),likes=scoredPosts.reduce((n,x)=>n+Math.min(20,new Set((x.likes||[]).filter(id=>id!==p.id&&id!==p.token)).size),0),comments=scoredPosts.reduce((n,x)=>n+Math.min(20,new Set((x.comments||[]).map(c=>c.playerId).filter(id=>id&&id!==p.id)).size),0);return {followers:Math.max(0,100+scoredPosts.length*40+likes*80+comments*30+(p.bonus?.followers||0)),credibility:Math.max(0,Math.min(100,50+likes*3+comments-scoredPosts.length*2+(p.bonus?.credibility||0))),earnings:Math.max(0,scoredPosts.length*25+likes*15+comments*5+(p.bonus?.earnings||0)),notoriety:Math.max(0,scoredPosts.length*5+likes*4+comments*2+(p.bonus?.notoriety||0))};}
 function resolveWinner(r){const tally={};for(const id of Object.values(r.finalVotes))tally[id]=(tally[id]||0)+1;return [...r.players].sort((a,b)=>(tally[b.id]||0)-(tally[a.id]||0)||stats(r,b).followers-stats(r,a).followers||a.id.localeCompare(b.id))[0]?.name||null;}
 const EVENTS=[
 {title:'A BRAND WANTS YOU',body:'A suspicious energy drink offers a paid partnership. Do you take the money?',options:[{label:'TAKE THE DEAL',delta:{earnings:450,followers:120,credibility:-14,notoriety:10}},{label:'TURN IT DOWN',delta:{credibility:14,followers:35}}]},
@@ -126,7 +132,7 @@ app.get('/api/media/:code/:id',async(req,res)=>{
  const r=rooms.get(code);if(!r||!/^[A-Z0-9]+$/.test(id))return res.sendStatus(404);
  if(!PERSIST){const m=r.media.get(id);if(!m)return res.sendStatus(404);res.type(m.type).send(m.data);return;}
  try{const response=await sb('/storage/v1/object/authenticated/game-media/'+code+'/'+id);
-  res.set({'Cache-Control':'private, max-age=86400, immutable','Content-Type':response.headers.get('content-type')||'application/octet-stream','X-Content-Type-Options':'nosniff'});
+  res.set({'Cache-Control':'private, max-age=3600','Content-Type':response.headers.get('content-type')||'application/octet-stream','X-Content-Type-Options':'nosniff'});
   res.send(Buffer.from(await response.arrayBuffer()));
  }catch(e){res.status(404).send('Media unavailable');}
 });
@@ -134,16 +140,25 @@ app.post('/api/upload/:code',(req,res)=>{upload.single('media')(req,res,async er
  if(err)return res.status(400).json({error:err.code==='LIMIT_FILE_SIZE'?'File too large. Maximum 8 MB.':err.message});
  const r=rooms.get(String(req.params.code).toUpperCase());if(!r)return res.status(404).json({error:'Game no longer active'});
  if(!req.file)return res.status(400).json({error:'Select a photo or video (8 MB max).'});
- if(r.status!=='live'||!r.players.some(p=>p.token===req.body?.token))return res.status(403).json({error:'Join an active game to upload media.'});
+ if(r.status!=='live'||cleaningRooms.has(r.code)||!r.players.some(p=>p.token===req.body?.token))return res.status(403).json({error:'Join an active game to upload media.'});
  const mediaLimit=!PERSIST?48*1024*1024:MAX_MEDIA_BYTES;
- if(r.mediaBytes+req.file.size>mediaLimit)return res.status(413).json({error:'Room media limit reached ('+Math.round(mediaLimit/1024/1024)+' MB).'});
- const id=generateCode()+generateCode();
+ if(r.mediaBytes+reservedBytes(r.code)+req.file.size>mediaLimit)return res.status(413).json({error:'This game has reached its '+Math.round(mediaLimit/1024/1024)+' MB media limit.'});
+ if(PERSIST&&totalMediaBytes()+req.file.size>GLOBAL_MEDIA_BUDGET)return res.status(413).json({error:'Shared media storage is nearly full across active games. Please wait for a game to finish and free storage.'});
+ const id=generateCode()+generateCode(),path='/storage/v1/object/game-media/'+r.code+'/'+id;
+ uploadReservations.set(r.code,reservedBytes(r.code)+req.file.size);
+ let uploaded=false;
  try{
-  if(PERSIST)await sb('/storage/v1/object/game-media/'+r.code+'/'+id,{method:'POST',headers:{'Content-Type':req.file.mimetype},body:req.file.buffer});
+  if(PERSIST){await sb(path,{method:'POST',headers:{'Content-Type':req.file.mimetype},body:req.file.buffer});uploaded=true;}
   else r.media.set(id,{type:req.file.mimetype,data:req.file.buffer});
+  if(r.status!=='live'||rooms.get(r.code)!==r||cleaningRooms.has(r.code)){
+   if(PERSIST&&uploaded)await sb('/storage/v1/object/game-media',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({prefixes:[r.code+'/'+id]})});
+   else r.media.delete(id);
+   return res.status(409).json({error:'The game ended while your media was uploading. The file was discarded.'});
+  }
   r.mediaBytes+=req.file.size;saveRoom(r).catch(e=>console.error('Media usage save failed',e.message));
   res.json({url:'/api/media/'+r.code+'/'+id,type:req.file.mimetype.startsWith('video/')?'video':'image'});
  }catch(e){console.error('Upload failed',e.message);res.status(503).json({error:'Media storage unavailable. '+(e.message.startsWith('Supabase ')?e.message:'Connection error: '+e.message).slice(0,260)});}
+ finally{const remaining=reservedBytes(r.code)-req.file.size;if(remaining>0)uploadReservations.set(r.code,remaining);else uploadReservations.delete(r.code);}
  });});
 function startRoom(r,now){r.status='live';r.round=0;r.startedAt=now;r.scheduledStart=0;r.endsAt=now+(r.duration+(r.mode==='event'?0:5))*60*1000;r.roundEndsAt=now+(r.mode==='event'?30:5)*60*1000;}
 io.on('connection',socket=>{
