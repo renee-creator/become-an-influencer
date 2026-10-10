@@ -21,7 +21,7 @@ function saveRoom(r){
  const prior=saves.get(r.code)||Promise.resolve();
  const task=prior.catch(()=>{}).then(()=>sb('/rest/v1/influencer_games?on_conflict=code',{method:'POST',headers:{'Content-Type':'application/json',Prefer:'resolution=merge-duplicates'},body:JSON.stringify({code:r.code,state,created_at:new Date(r.createdAt).toISOString(),expires_at:new Date(r.expiresAt).toISOString()})})).catch(e=>{console.error('Save failed',r.code,e.message);throw e;});
  saves.set(r.code,task);
- task.finally(()=>{if(saves.get(r.code)===task)saves.delete(r.code);});
+ task.then(()=>{if(saves.get(r.code)===task)saves.delete(r.code);},()=>{if(saves.get(r.code)===task)saves.delete(r.code);});
  return task;
 }
 async function restoreRooms(){
@@ -128,7 +128,7 @@ socket.on('comment',({id,text},reply)=>{
  post.comments.push({id:generateCode()+generateCode(),author:socket.data.name,text:message,created:Date.now()});
  emit(r);reply?.({ok:true});
 });
-socket.on('vote',({id},reply)=>{const r=rooms.get(socket.data.room);if(!r||r.status!=='final'||!r.players.some(x=>x.id===id)||!r.players.some(x=>x.token===socket.data.token))return reply?.({error:'Invalid vote'});const voter=r.players.find(p=>p.token===socket.data.token);if(id===voter.id)return reply?.({error:'You cannot vote for yourself'});r.finalVotes[voter.id]=id;const tally={};Object.values(r.finalVotes).forEach(x=>tally[x]=(tally[x]||0)+1);const best=Object.entries(tally).sort((a,b)=>b[1]-a[1])[0];r.winner=null;emit(r);reply?.({ok:true});});
+socket.on('vote',({id},reply)=>{const r=rooms.get(socket.data.room);if(!r||r.status!=='final'||!r.players.some(x=>x.id===id)||!r.players.some(x=>x.token===socket.data.token))return reply?.({error:'Invalid vote'});const voter=r.players.find(p=>p.token===socket.data.token);if(id===voter.id)return reply?.({error:'You cannot vote for yourself'});r.finalVotes[voter.id]=id;r.winner=null;emit(r);reply?.({ok:true});});
 socket.on('disconnect',()=>{const r=rooms.get(socket.data.room);if(!r)return;emit(r,false);});
 });
 setInterval(()=>{const now=Date.now();for(const r of rooms.values()){if(r.status==='final'&&now>=r.voteEndsAt){r.status='done';r.winner=resolveWinner(r);emit(r);continue;}if(r.status!=='live')continue;if(now>=r.endsAt){r.status='final';r.roundEndsAt=0;r.voteEndsAt=now+90*1000;emit(r);}else if(now>=r.roundEndsAt){if(r.round<r.challenges.length-1){r.round++;r.roundEndsAt=Math.min(r.endsAt,now+5*60*1000);emit(r);}else{r.status='final';r.roundEndsAt=0;r.voteEndsAt=now+90*1000;emit(r);}}}},1000).unref();
