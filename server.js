@@ -8,7 +8,7 @@ const SB_URL=(process.env.SUPABASE_URL||'').replace(/\/$/,'');
 const SB_KEY=process.env.SUPABASE_SERVICE_ROLE_KEY||'';
 const PERSIST=!!(SB_URL&&SB_KEY);
 async function sb(url,options={}){
- const response=await fetch(SB_URL+url,{...options,headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,...options.headers}});
+ const response=await fetch(SB_URL+url,{...options,headers:{apikey:SB_KEY,...(SB_KEY.startsWith('eyJ')?{Authorization:'Bearer '+SB_KEY}:{}),...options.headers}});
  if(!response.ok)throw Error('Supabase '+response.status+': '+(await response.text()).slice(0,200));
  return response;
 }
@@ -104,15 +104,26 @@ app.post('/api/upload/:code',(req,res)=>{upload.single('media')(req,res,async er
   else r.media.set(id,{type:req.file.mimetype,data:req.file.buffer});
   r.mediaBytes+=req.file.size;
   res.json({url:'/api/media/'+r.code+'/'+id,type:req.file.mimetype.startsWith('video/')?'video':'image'});
- }catch(e){console.error('Upload failed',e.message);res.status(503).json({error:'Media storage unavailable'});}
+ }catch(e){console.error('Upload failed',e.message);res.status(503).json({error:'Media storage unavailable. Check the game-media bucket and Supabase key in Render. '+(e.message.match(/Supabase \d+/)?.[0]||'')});}
  });});
 io.on('connection',socket=>{
 socket.on('join',({code,name,token,persona},reply)=>{const r=rooms.get(safe(code).toUpperCase());if(!r)return reply({error:'Game not found'});const n=safe(name).trim().slice(0,28);const chosen=PERSONAS.includes(persona)?persona:'Lifestyle Influencer';if(!n)return reply({error:'Enter a name'});if(r.players.length>=100&&!r.players.some(x=>x.token===token))return reply({error:'Room full'});socket.join(r.code);socket.data.room=r.code;socket.data.name=n;let p=token&&r.players.find(x=>x.token===token);if(p){p.id=socket.id;p.name=n;p.persona=p.persona||chosen;p.bonus=p.bonus||{...PERSONA_BONUS[p.persona]};}else{token=generateCode()+generateCode()+generateCode();p={id:socket.id,name:n,token,persona:chosen,bonus:{...PERSONA_BONUS[chosen]},eventRounds:[]};r.players.push(p);}socket.data.token=token;reply({ok:true,id:socket.id,token});emit(r);});
 socket.on('watch',({code},reply)=>{const r=rooms.get(safe(code).toUpperCase());if(!r)return reply?.({error:'Game not found'});socket.join(r.code);reply?.({ok:true});emit(r);});
 socket.on('host',({code,key,action},reply)=>{const r=rooms.get(safe(code).toUpperCase());if(!r||r.key!==key)return reply?.({error:'Invalid host key'});if(action==='start'&&r.status==='lobby'){r.status='live';r.round=0;r.endsAt=Date.now()+r.duration*60*1000;r.roundEndsAt=Date.now()+5*60*1000;}if(action==='next'&&r.status==='live'){r.round=Math.min(r.round+1,r.challenges.length-1);r.roundEndsAt=Math.min(r.endsAt,Date.now()+5*60*1000);}if(action==='final'&&r.status==='live'){r.status='final';r.roundEndsAt=0;r.voteEndsAt=Date.now()+90*1000;}if(action==='reset'){r.status='lobby';r.round=0;r.roundEndsAt=0;r.endsAt=0;r.challenges=makeChallenges(r.duration);r.postPrompts=makePostPrompts(r.duration);r.posts=[];r.media=new Map();r.mediaBytes=0;r.finalVotes={};r.winner=null;r.voteEndsAt=0;r.eventSeed=Math.floor(Math.random()*EVENTS.length);for(const p of r.players){p.bonus={...PERSONA_BONUS[p.persona]};p.eventRounds=[];}}emit(r);reply?.({ok:true});});
 socket.on('eventChoice',({choice},reply)=>{const r=rooms.get(socket.data.room);const p=r?.players.find(x=>x.token===socket.data.token);if(!r||r.status!=='live'||!p)return reply?.({error:'Game not active'});p.eventRounds=p.eventRounds||[];if(p.eventRounds.includes(r.round))return reply?.({error:'Already decided this round'});const opt=eventFor(r).options[Number(choice)];if(!opt)return reply?.({error:'Invalid choice'});p.eventRounds.push(r.round);addStats(p,opt.delta);emit(r);reply?.({ok:true});});
-socket.on('post',({text,media},reply)=>{const r=rooms.get(socket.data.room);if(!r||r.status!=='live'||!r.players.some(p=>p.token===socket.data.token))return reply?.({error:'Game not live'});const t=safe(text).trim();if(!t&&!media)return reply?.({error:'Add text or media'});if(media&&(!String(media.url||'').startsWith('/api/media/'+r.code+'/')||!['image','video'].includes(media.type)))return reply?.({error:'Invalid media'});if(media&&!PERSIST&&!r.media.has(String(media.url).split('/').pop()))return reply?.({error:'Uploaded media expired. Please select it again.'});r.posts.unshift({id:generateCode()+generateCode(),author:socket.data.name,persona:r.players.find(p=>p.token===socket.data.token)?.persona||'Influencer',owner:socket.data.token,text:t,media:media||null,likes:[],created:Date.now()});emit(r);reply?.({ok:true});});
+socket.on('post',({text,media},reply)=>{const r=rooms.get(socket.data.room);if(!r||r.status!=='live'||!r.players.some(p=>p.token===socket.data.token))return reply?.({error:'Game not live'});const t=safe(text).trim();if(!t&&!media)return reply?.({error:'Add text or media'});if(media&&(!String(media.url||'').startsWith('/api/media/'+r.code+'/')||!['image','video'].includes(media.type)))return reply?.({error:'Invalid media'});if(media&&!PERSIST&&!r.media.has(String(media.url).split('/').pop()))return reply?.({error:'Uploaded media expired. Please select it again.'});r.posts.unshift({id:generateCode()+generateCode(),author:socket.data.name,persona:r.players.find(p=>p.token===socket.data.token)?.persona||'Influencer',owner:socket.data.token,text:t,media:media||null,likes:[],comments:[],challengeRound:r.round,created:Date.now()});emit(r);reply?.({ok:true});});
 socket.on('like',({id})=>{const r=rooms.get(socket.data.room);if(!r||!socket.data.token)return;const p=r.posts.find(x=>x.id===id);if(!p||p.owner===socket.data.token)return;p.likes.includes(socket.data.token)?p.likes=p.likes.filter(x=>x!==socket.data.token):p.likes.push(socket.data.token);emit(r);});
+socket.on('comment',({id,text},reply)=>{
+ const r=rooms.get(socket.data.room);
+ if(!r||r.status!=='live'||!socket.data.token)return reply?.({error:'Game not active'});
+ const post=r.posts.find(p=>p.id===id);
+ const message=String(text||'').trim().slice(0,240);
+ if(!post||!message)return reply?.({error:'Write a comment first'});
+ if((post.comments||[]).length>=100)return reply?.({error:'Comment limit reached'});
+ post.comments=post.comments||[];
+ post.comments.push({id:generateCode()+generateCode(),author:socket.data.name,text:message,created:Date.now()});
+ emit(r);reply?.({ok:true});
+});
 socket.on('vote',({id},reply)=>{const r=rooms.get(socket.data.room);if(!r||r.status!=='final'||!r.players.some(x=>x.id===id)||!r.players.some(x=>x.token===socket.data.token))return reply?.({error:'Invalid vote'});if(id===socket.id)return reply?.({error:'You cannot vote for yourself'});if(r.status==='done')return reply?.({error:'Voting closed'});r.finalVotes[socket.data.token]=id;const tally={};Object.values(r.finalVotes).forEach(x=>tally[x]=(tally[x]||0)+1);const best=Object.entries(tally).sort((a,b)=>b[1]-a[1])[0];r.winner=best?r.players.find(x=>x.id===best[0])?.name:null;emit(r);reply?.({ok:true});});
 socket.on('disconnect',()=>{const r=rooms.get(socket.data.room);if(!r)return;emit(r);});
 });
