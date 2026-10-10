@@ -13,6 +13,8 @@ async function sb(url,options={}){
  return response;
 }
 const saves=new Map();
+function migrateRoom(r){for(const p of r.players||[]){if(!p.id||!p.id.startsWith('player-'))p.id='player-'+randomUUID();}}
+
 function saveRoom(r){
  if(!PERSIST)return Promise.resolve();
  const state={...r,media:undefined,mediaBytes:undefined};
@@ -29,7 +31,7 @@ async function restoreRooms(){
   for(const row of await (await sb(q)).json()){
    const r=row.state;if(!r||!r.code)continue;
    r.media=new Map();r.mediaBytes=0;r.createdAt=r.createdAt||Date.now();r.expiresAt=Date.parse(row.expires_at);
-   rooms.set(r.code,r);
+   migrateRoom(r);rooms.set(r.code,r);
   }
   console.log('Restored '+rooms.size+' games');
  }catch(e){console.error('Room restoration failed',e.message);}
