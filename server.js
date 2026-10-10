@@ -168,4 +168,4 @@ app.get('/health/supabase',async(req,res)=>{
  ]);
  const ok=checks.database==='ok'&&checks.storage==='ok';
  res.status(ok?200:503).json({ok,checks});
-});restoreRooms().then(()=>purgeExpired()).finally(()=>server.listen(process.env.PORT||3000,()=>{console.log('Influencer beta listening');verifySupabase().then(()=>verifyStorageWrite()).catch(e=>console.error('Supabase diagnostic failed:',e.message));}));
+});restoreRooms().then(()=>purgeExpired()).finally(()=>server.listen(process.env.PORT||3000,()=>{console.log('Influencer beta listening');verifySupabase().catch(e=>console.error('Supabase diagnostic failed:',e.message));}));
