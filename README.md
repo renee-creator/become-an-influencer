@@ -33,7 +33,7 @@ create index if not exists influencer_games_expires_at_idx on public.influencer_
 alter table public.influencer_games enable row level security;
 ```
 
-With Supabase configured, game state and uploaded media persist across server restarts. Rooms expire after 24 hours; cleanup runs at startup and periodically, so deletion may not occur at the exact expiry instant. Without Supabase, rooms are temporary.
+With Supabase configured, game state and uploaded media persist across server restarts. Quick Fame rooms expire after 24 hours; Event Mode rooms expire after 48 hours. Uploaded photos and videos are permanently deleted as soon as the winner is revealed. Expired-room cleanup also runs at startup and hourly while the server is awake, so expiry cleanup may be delayed while a Free instance is sleeping. Resetting a room also deletes its old media. Without Supabase, rooms are temporary.
 
 ## Game timing
 
@@ -46,4 +46,4 @@ The first five minutes are always **Introduce Yourself**: players introduce thei
 
 ## Notes
 
-The app is an early private beta. Uploaded photos/videos are limited to 8 MB each, and a game has a total media cap. Player reconnect credentials are private and should not be shared. Use only with trusted adult participants; there is not yet a full moderation or abuse-prevention system. Keep your host tab open to retain the host key.
+The app is an early private beta. Uploaded photos/videos are limited to 8 MB each, and each game has a 250 MB media cap with Supabase (48 MB without). Across active rooms, uploads are refused once tracked usage approaches 900 MB, leaving headroom below the shared Supabase Free 1 GB storage allowance. Existing orphaned files and other buckets also count toward Supabase's actual quota, so periodically review Storage usage. Players can download a souvenir image featuring their highest-engagement photo post while the game is live or in final voting; save it before the winner reveal deletes the original photos. Player reconnect credentials are private and should not be shared. Use only with trusted adult participants; there is not yet a full moderation or abuse-prevention system. Keep your host tab open to retain the host key.
