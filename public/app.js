@@ -1,14 +1,14 @@
-const app=document.getElementById('app'),socket=io();let room='',hostKey='',playerId='',name='',state=null,tab='feed',view='player',uploaded=null;
+const app=document.getElementById('app'),socket=io();let room='',hostKey='',playerId='',name='',state=null,tab='feed',view='player',uploaded=null,playerToken=sessionStorage.getItem('influencer-player-token')||'';
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const url=new URL(location.href);room=(url.searchParams.get('room')||'').toUpperCase();if(url.searchParams.get('display'))view='display';
 function shell(inner){app.className=view==='display'?'projector':'';app.innerHTML='<header>BECOME AN INFLUENCER<span style="color:#E8F35A">.</span> <small style="float:right">THE FAME GAME ↗</small></header><section>'+inner+'</section>';}
 function error(x){const n=document.getElementById('notice');if(n)n.textContent=x;}
 function welcome(){shell('<div class="label">THE FAME GAME</div><h1>GO VIRAL.<br>GET RICH.<br>GET CANCELED.</h1><p>One game. Everyone\'s phone. Your fifteen minutes of fame.</p><div class="card"><h2>JOIN A GAME</h2><input id="room" placeholder="ROOM CODE" value="'+esc(room)+'"><input id="name" placeholder="YOUR INFLUENCER HANDLE"><button onclick="join()">JOIN THE FEED →</button></div><div class="card lime"><h2>HOST A PARTY</h2><button class="dark" onclick="create()">CREATE NEW GAME →</button></div><p id="notice"></p>');}
 async function create(){try{const r=await fetch('/api/create',{method:'POST'}),d=await r.json();room=d.code;hostKey=d.key;view='host';history.replaceState({},'', '/?room='+room);socket.emit('watch',{code:room},()=>{});render();}catch(e){error(e.message)}}
-function join(){room=document.getElementById('room').value.trim().toUpperCase();name=document.getElementById('name').value.trim();socket.emit('join',{code:room,name},r=>{if(r.error)return error(r.error);playerId=r.id;view='player';history.replaceState({},'','/?room='+room);render();});}
+function join(){room=document.getElementById('room').value.trim().toUpperCase();name=document.getElementById('name').value.trim();socket.emit('join',{code:room,name,token:playerToken},r=>{if(r.error)return error(r.error);playerId=r.id;playerToken=r.token;sessionStorage.setItem('influencer-player-token',playerToken);sessionStorage.setItem('influencer-player-name',name);sessionStorage.setItem('influencer-player-room',room);view='player';history.replaceState({},'','/?room='+room);render();});}
 function watch(){socket.emit('watch',{code:room},r=>{if(r.error)alert(r.error);});}
 socket.on('state',s=>{if(s.code===room){state=s;render();}});
-socket.on('connect',()=>{if(view==='host'||view==='display')watch();else if(playerId&&name)socket.emit('join',{code:room,name},r=>{if(r.ok)playerId=r.id;});});
+socket.on('connect',()=>{if(view==='host'||view==='display')watch();else if(playerToken&&name)socket.emit('join',{code:room,name,token:playerToken},r=>{if(r.ok){playerId=r.id;playerToken=r.token;}});});
 function action(a){socket.emit('host',{code:room,key:hostKey,action:a},r=>{if(r?.error)alert(r.error);});}
 function like(id){socket.emit('like',{id});}
 function vote(id){socket.emit('vote',{id},r=>{if(r?.error)alert(r.error);});}
@@ -31,4 +31,4 @@ else if(tab==='challenge')content='<div class="card blue"><div class="small">ROU
 else content=feed();
 shell('<div class="label">LIVE · ROOM '+esc(room)+'</div><h1>YOUR 15 MINUTES.</h1><p>Playing as <strong>'+esc(name)+'</strong> · '+state.players.length+' influencers</p>'+nav+content);
 }
-welcome();if(view==='display'&&room)watch();
+if(!url.searchParams.get('display')&&sessionStorage.getItem('influencer-player-room')===room&&sessionStorage.getItem('influencer-player-name')){name=sessionStorage.getItem('influencer-player-name');socket.emit('join',{code:room,name,token:playerToken},r=>{if(r.ok){playerId=r.id;playerToken=r.token;view='player';sessionStorage.setItem('influencer-player-token',playerToken);render();}else welcome();});}else welcome();if(view==='display'&&room)watch();
