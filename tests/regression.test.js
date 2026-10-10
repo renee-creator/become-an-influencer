@@ -25,3 +25,24 @@ test('finished games delete Supabase files and keep the winner',()=>{assert.matc
 test('cleanup retries and removes expired rooms only after media deletion',()=>{assert.match(server,/if\(r\.status==='done'&&!r\.mediaCleanedAt\)await finishRoomMedia\(r\)/);assert.match(server,/await deleteRoomMedia\(row\.code\)/);});
 
 test('host reset deletes prior media before clearing the room',()=>{assert.match(server,/r\.status='resetting';cleaningRooms\.add\(r\.code\)/);assert.match(server,/await deleteRoomMedia\(r\.code\)/);assert.match(server,/Could not delete previous game media/);});
+
+test('best engagement posts per round are scored regardless of feed order',()=>{
+ assert.match(server,/group\.sort\(\(a,b\)=>postEngagement\(b,p\)-postEngagement\(a,p\)/);
+ assert.match(server,/\.slice\(0,2\)/);
+});
+test('per-game and shared active-room media limits include pending uploads',()=>{
+ assert.match(server,/MAX_MEDIA_BYTES=250\*1024\*1024/);
+ assert.match(server,/GLOBAL_MEDIA_BUDGET=900\*1024\*1024/);
+ assert.match(server,/totalMediaBytes\(\)\+req\.file\.size>GLOBAL_MEDIA_BUDGET/);
+ assert.match(server,/r\.mediaBytes\+reservedBytes\(r\.code\)\+req\.file\.size>mediaLimit/);
+});
+test('media cache lifetime and late upload deletion',()=>{
+ assert.match(server,/private, max-age=3600/);
+ assert.match(server,/The game ended while your media was uploading/);
+ assert.match(server,/prefixes:\[r\.code\+'\/'\+id\]/);
+});
+test('photo souvenir download is available before media cleanup',()=>{
+ assert.match(client,/function saveSouvenir\(/);
+ assert.match(client,/SAVE MY BEST POST/);
+ assert.match(client,/canvas\.toDataURL\('image\/png'\)/);
+});
