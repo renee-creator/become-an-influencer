@@ -4,7 +4,7 @@ app.use(express.static(path.join(__dirname,'public')));app.use(express.json());
 const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:8*1024*1024},fileFilter:(req,f,cb)=>{const allowed=/^(image\/(jpeg|png|webp|gif)|video\/(mp4|webm|quicktime))$/.test(f.mimetype);cb(allowed?null:new Error('Unsupported file type'),allowed);}});
 const MAX_MEDIA_BYTES=48*1024*1024;
 
-const SB_URL=(process.env.SUPABASE_URL||'').replace(/\/$/,'');
+const SB_URL=(()=>{try{const raw=(process.env.SUPABASE_URL||'').trim();const u=new URL(raw);if(u.protocol!=='https:'||!u.hostname.endsWith('.supabase.co'))throw Error('Invalid Supabase project URL');return u.origin;}catch(e){console.error('Invalid SUPABASE_URL configuration:',e.message);return '';}})();
 const SB_KEY=process.env.SUPABASE_SERVICE_ROLE_KEY||'';
 const PERSIST=!!(SB_URL&&SB_KEY);
 async function sb(url,options={}){
