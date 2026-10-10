@@ -13,7 +13,7 @@ async function sb(url,options={}){
  return response;
 }
 const saves=new Map();
-function migrateRoom(r){const previous=new Map();for(const p of r.players||[]){const old=p.id;if(!p.id||!p.id.startsWith('player-'))p.id='player-'+randomUUID();previous.set(old,p.id);previous.set(p.token,p.id);}for(const post of r.posts||[]){if(previous.has(post.owner))post.owner=previous.get(post.owner);post.likes=(post.likes||[]).map(id=>previous.get(id)||id);}for(const [voter,target] of Object.entries(r.finalVotes||{})){const voterId=previous.get(voter)||voter,targetId=previous.get(target)||target;delete r.finalVotes[voter];if(voterId!==targetId)r.finalVotes[voterId]=targetId;}}
+function migrateRoom(r){const previous=new Map();for(const p of r.players||[]){const old=p.id;if(!p.id||!p.id.startsWith('player-'))p.id='player-'+randomUUID();previous.set(old,p.id);previous.set(p.token,p.id);}for(const post of r.posts||[]){if(previous.has(post.owner))post.owner=previous.get(post.owner);post.likes=(post.likes||[]).map(id=>previous.get(id)||id);for(const comment of post.comments||[]){if(comment.playerId)comment.playerId=previous.get(comment.playerId)||comment.playerId;else{const matches=(r.players||[]).filter(p=>p.name===comment.author);if(matches.length===1)comment.playerId=matches[0].id;}}}for(const [voter,target] of Object.entries(r.finalVotes||{})){const voterId=previous.get(voter)||voter,targetId=previous.get(target)||target;delete r.finalVotes[voter];if(voterId!==targetId)r.finalVotes[voterId]=targetId;}}
 
 function saveRoom(r){
  if(!PERSIST)return Promise.resolve();
@@ -64,7 +64,7 @@ const POST_PROMPTS=["Post a behind-the-scenes update about your influencer routi
 function makePostPrompts(duration){return ['Write your first introduction post. Tell the feed who you are, what you post about, and why people should follow you.',...[...POST_PROMPTS].sort(()=>Math.random()-.5).slice(0,duration/5)];}
 const PERSONAS=['Beauty Guru','Wellness Expert','Lifestyle Influencer','Fitness Personality','Family Vlogger','Luxury Influencer','Conspiracy Creator','Aspiring Celebrity'];
 const BASE={followers:100,credibility:50,earnings:0,notoriety:0};
-function stats(r,p){const posts=r.posts.filter(x=>x.owner===p.id||x.owner===p.token),likes=posts.reduce((n,x)=>n+(x.likes||[]).filter(id=>id!==p.id&&id!==p.token).length,0),comments=posts.reduce((n,x)=>n+(x.comments||[]).filter(c=>c.author!==p.name).length,0);return {followers:Math.max(0,100+posts.length*40+likes*80+comments*30+(p.bonus?.followers||0)),credibility:Math.max(0,Math.min(100,50+likes*3+comments-posts.length*2+(p.bonus?.credibility||0))),earnings:Math.max(0,posts.length*25+likes*15+comments*5+(p.bonus?.earnings||0)),notoriety:Math.max(0,posts.length*5+likes*4+comments*2+(p.bonus?.notoriety||0))};}
+function stats(r,p){const posts=r.posts.filter(x=>x.owner===p.id||x.owner===p.token),likes=posts.reduce((n,x)=>n+(x.likes||[]).filter(id=>id!==p.id&&id!==p.token).length,0),comments=posts.reduce((n,x)=>n+new Set((x.comments||[]).map(c=>c.playerId).filter(id=>id&&id!==p.id)).size,0);return {followers:Math.max(0,100+posts.length*40+likes*80+comments*30+(p.bonus?.followers||0)),credibility:Math.max(0,Math.min(100,50+likes*3+comments-posts.length*2+(p.bonus?.credibility||0))),earnings:Math.max(0,posts.length*25+likes*15+comments*5+(p.bonus?.earnings||0)),notoriety:Math.max(0,posts.length*5+likes*4+comments*2+(p.bonus?.notoriety||0))};}
 function resolveWinner(r){const tally={};for(const id of Object.values(r.finalVotes))tally[id]=(tally[id]||0)+1;return [...r.players].sort((a,b)=>(tally[b.id]||0)-(tally[a.id]||0)||stats(r,b).followers-stats(r,a).followers||a.id.localeCompare(b.id))[0]?.name||null;}
 const EVENTS=[
 {title:'A BRAND WANTS YOU',body:'A suspicious energy drink offers a paid partnership. Do you take the money?',options:[{label:'TAKE THE DEAL',delta:{earnings:450,followers:120,credibility:-14,notoriety:10}},{label:'TURN IT DOWN',delta:{credibility:14,followers:35}}]},
@@ -125,7 +125,8 @@ socket.on('comment',({id,text},reply)=>{
  if(!post||!message)return reply?.({error:'Write a comment first'});
  if((post.comments||[]).length>=100)return reply?.({error:'Comment limit reached'});
  post.comments=post.comments||[];
- post.comments.push({id:generateCode()+generateCode(),author:socket.data.name,text:message,created:Date.now()});
+ const commenter=r.players.find(p=>p.token===socket.data.token);if(!commenter)return reply?.({error:'Player not found'});
+ post.comments.push({id:generateCode()+generateCode(),author:commenter.name,playerId:commenter.id,text:message,created:Date.now()});
  emit(r);reply?.({ok:true});
 });
 socket.on('vote',({id},reply)=>{const r=rooms.get(socket.data.room);if(!r||r.status!=='final'||!r.players.some(x=>x.id===id)||!r.players.some(x=>x.token===socket.data.token))return reply?.({error:'Invalid vote'});const voter=r.players.find(p=>p.token===socket.data.token);if(id===voter.id)return reply?.({error:'You cannot vote for yourself'});r.finalVotes[voter.id]=id;r.winner=null;emit(r);reply?.({ok:true});});
