@@ -151,7 +151,8 @@ async function verifyStorageWrite(){
   catch(e){console.error('Supabase storage cleanup FAILED:',e.message);}
  }
 }
-app.get('/health',async(req,res)=>{
+app.get('/health',(req,res)=>res.json({ok:true}));
+app.get('/health/supabase',async(req,res)=>{
  const checks={configured:PERSIST,urlValid:!!SB_URL,database:'not checked',storage:'not checked'};
  if(!PERSIST)return res.status(503).json({ok:false,checks});
  async function check(path){
