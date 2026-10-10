@@ -19,3 +19,7 @@ test('event and quick challenge arrays have correct sizes',()=>{const constants=
 test('host reset uses a second tap',()=>{assert.match(client,/resetArmedUntil=now\+5000/);assert.match(client,/TAP AGAIN TO RESET/);});
 test('uploads require an active player',()=>{assert.match(server,/p\.token===req\.body\?\.token/);assert.match(client,/fd\.append\('token',playerToken/);});
 test('surprise announcements and scheduled event extensions exist',()=>{assert.match(server,/action==='surprise'/);assert.match(server,/r\.endsAt\+=extension\*60\*1000/);assert.match(client,/EXTEND 30 MINUTES/);});
+
+test('free-plan media cap allows up to 900 MB per game',()=>{assert.match(server,/MAX_MEDIA_BYTES=900\*1024\*1024/);assert.match(server,/const mediaLimit=!PERSIST\?48\*1024\*1024:MAX_MEDIA_BYTES/);});
+test('finished games delete Supabase files and keep the winner',()=>{assert.match(server,/async function deleteRoomMedia\(code\)/);assert.match(server,/async function finishRoomMedia\(r\)/);assert.match(server,/r\.status='done';r\.winner=resolveWinner\(r\)/);assert.match(server,/finishRoomMedia\(r\)\.catch/);assert.match(server,/for\(const post of r\.posts\)post\.media=null/);});
+test('cleanup retries and removes expired rooms only after media deletion',()=>{assert.match(server,/if\(r\.status==='done'&&!r\.mediaCleanedAt\)await finishRoomMedia\(r\)/);assert.match(server,/await deleteRoomMedia\(row\.code\)/);});
