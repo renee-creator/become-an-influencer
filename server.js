@@ -128,6 +128,13 @@ socket.on('vote',({id},reply)=>{const r=rooms.get(socket.data.room);if(!r||r.sta
 socket.on('disconnect',()=>{const r=rooms.get(socket.data.room);if(!r)return;emit(r);});
 });
 setInterval(()=>{const now=Date.now();for(const r of rooms.values()){if(r.status==='final'&&now>=r.voteEndsAt){r.status='done';emit(r);continue;}if(r.status!=='live')continue;if(now>=r.endsAt){r.status='final';r.roundEndsAt=0;r.voteEndsAt=now+90*1000;emit(r);}else if(now>=r.roundEndsAt){if(r.round<r.challenges.length-1){r.round++;r.roundEndsAt=Math.min(r.endsAt,now+5*60*1000);emit(r);}else{r.status='final';r.roundEndsAt=0;r.voteEndsAt=now+90*1000;emit(r);}}}},1000).unref();
+async function verifySupabase(){
+ if(!PERSIST){console.error('Supabase check: missing or invalid configuration');return;}
+ for(const [label,endpoint] of [['database','/rest/v1/influencer_games?select=code&limit=1'],['storage','/storage/v1/bucket/game-media']]){
+  try{await sb(endpoint);console.log('Supabase '+label+' connection OK');}
+  catch(e){console.error('Supabase '+label+' connection FAILED:',e.message);}
+ }
+}
 app.get('/health',async(req,res)=>{
  const checks={configured:PERSIST,urlValid:!!SB_URL,database:'not checked',storage:'not checked'};
  if(!PERSIST)return res.status(503).json({ok:false,checks});
@@ -141,4 +148,4 @@ app.get('/health',async(req,res)=>{
  ]);
  const ok=checks.database==='ok'&&checks.storage==='ok';
  res.status(ok?200:503).json({ok,checks});
-});restoreRooms().then(()=>purgeExpired()).finally(()=>server.listen(process.env.PORT||3000,()=>console.log('Influencer beta listening')));
+});restoreRooms().then(()=>purgeExpired()).finally(()=>server.listen(process.env.PORT||3000,()=>{console.log('Influencer beta listening');verifySupabase().catch(e=>console.error('Supabase diagnostic failed:',e.message));}));
