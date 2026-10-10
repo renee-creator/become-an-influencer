@@ -23,3 +23,5 @@ test('surprise announcements and scheduled event extensions exist',()=>{assert.m
 test('free-plan media cap allows up to 900 MB per game',()=>{assert.match(server,/MAX_MEDIA_BYTES=900\*1024\*1024/);assert.match(server,/const mediaLimit=!PERSIST\?48\*1024\*1024:MAX_MEDIA_BYTES/);});
 test('finished games delete Supabase files and keep the winner',()=>{assert.match(server,/async function deleteRoomMedia\(code\)/);assert.match(server,/async function finishRoomMedia\(r\)/);assert.match(server,/r\.status='done';r\.winner=resolveWinner\(r\)/);assert.match(server,/finishRoomMedia\(r\)\.catch/);assert.match(server,/for\(const post of r\.posts\)post\.media=null/);});
 test('cleanup retries and removes expired rooms only after media deletion',()=>{assert.match(server,/if\(r\.status==='done'&&!r\.mediaCleanedAt\)await finishRoomMedia\(r\)/);assert.match(server,/await deleteRoomMedia\(row\.code\)/);});
+
+test('host reset deletes prior media before clearing the room',()=>{assert.match(server,/r\.status='resetting';cleaningRooms\.add\(r\.code\)/);assert.match(server,/await deleteRoomMedia\(r\.code\)/);assert.match(server,/Could not delete previous game media/);});
