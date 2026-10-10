@@ -139,21 +139,6 @@ async function verifySupabase(){
   catch(e){console.error('Supabase '+label+' connection FAILED:',e.message);}
  }
 }
-async function verifyStorageWrite(){
- if(!PERSIST)return;
- const object='__diagnostics__/probe-'+Date.now()+'.txt';
- const path='/storage/v1/object/game-media/'+object;
- try{
-  await sb(path,{method:'POST',headers:{'Content-Type':'text/plain'},body:'upload test'});
-  const downloaded=await sb('/storage/v1/object/authenticated/game-media/'+object);
-  if((await downloaded.text())!=='upload test')throw Error('Downloaded content did not match uploaded content');
-  console.log('Supabase storage upload and download OK');
- }catch(e){console.error('Supabase storage upload/download FAILED:',e.message);}
- finally{
-  try{await sb('/storage/v1/object/game-media',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({prefixes:[object]})});console.log('Supabase storage cleanup OK');}
-  catch(e){console.error('Supabase storage cleanup FAILED:',e.message);}
- }
-}
 app.get('/health',(req,res)=>res.json({ok:true}));
 app.get('/health/supabase',async(req,res)=>{
  const checks={configured:PERSIST,urlValid:!!SB_URL,database:'not checked',storage:'not checked'};
