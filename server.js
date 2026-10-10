@@ -1,5 +1,8 @@
 const express=require('express'),http=require('http'),{Server}=require('socket.io'),multer=require('multer'),path=require('path'),fs=require('fs'),QRCode=require('qrcode'),{randomUUID}=require('crypto');
 const app=express(),server=http.createServer(app),io=new Server(server,{maxHttpBufferSize:12e6});
+const sharp=require('sharp');
+const iconSvg=fs.readFileSync(path.join(__dirname,'public','icon.svg'));
+app.get(['/apple-touch-icon.png','/icon-192.png','/icon-512.png'],async(req,res)=>{try{const size=req.path.includes('512')?512:req.path.includes('192')?192:180;const png=await sharp(iconSvg).resize(size,size).png().toBuffer();res.set({'Content-Type':'image/png','Cache-Control':'public, max-age=3600'}).send(png);}catch(e){console.error('Icon render failed',e.message);res.sendStatus(500);}});
 app.use(express.static(path.join(__dirname,'public')));app.use(express.json());
 const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:8*1024*1024},fileFilter:(req,f,cb)=>{const allowed=/^(image\/(jpeg|png|webp|gif)|video\/(mp4|webm|quicktime))$/.test(f.mimetype);cb(allowed?null:new Error('Unsupported file type'),allowed);}});
 const MAX_MEDIA_BYTES=250*1024*1024; // per-room safety cap; Supabase Free storage is shared across rooms
