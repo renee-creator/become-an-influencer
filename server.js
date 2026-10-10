@@ -2,7 +2,7 @@ const express=require('express'),http=require('http'),{Server}=require('socket.i
 const app=express(),server=http.createServer(app),io=new Server(server,{maxHttpBufferSize:12e6});
 app.use(express.static(path.join(__dirname,'public')));app.use(express.json());
 const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:8*1024*1024},fileFilter:(req,f,cb)=>{const allowed=/^(image\/(jpeg|png|webp|gif)|video\/(mp4|webm|quicktime))$/.test(f.mimetype);cb(allowed?null:new Error('Unsupported file type'),allowed);}});
-const MAX_MEDIA_BYTES=48*1024*1024;
+const MAX_MEDIA_BYTES=512*1024*1024; // per-room total, including uploads before a restart
 
 const SB_URL=(()=>{try{const raw=(process.env.SUPABASE_URL||'').trim();const u=new URL(raw);if(u.protocol!=='https:'||!u.hostname.endsWith('.supabase.co'))throw Error('Invalid Supabase project URL');return u.origin;}catch(e){console.error('Invalid SUPABASE_URL configuration:',e.message);return '';}})();
 const SB_KEY=process.env.SUPABASE_SERVICE_ROLE_KEY||'';
@@ -17,7 +17,7 @@ function migrateRoom(r){const previous=new Map();for(const p of r.players||[]){c
 
 function saveRoom(r){
  if(!PERSIST)return Promise.resolve();
- const state={...r,media:undefined,mediaBytes:undefined};
+ const state={...r,media:undefined};
  const prior=saves.get(r.code)||Promise.resolve();
  const task=prior.catch(()=>{}).then(()=>sb('/rest/v1/influencer_games?on_conflict=code',{method:'POST',headers:{'Content-Type':'application/json',Prefer:'resolution=merge-duplicates'},body:JSON.stringify({code:r.code,state,created_at:new Date(r.createdAt).toISOString(),expires_at:new Date(r.expiresAt).toISOString()})})).catch(e=>{console.error('Save failed',r.code,e.message);throw e;});
  saves.set(r.code,task);
@@ -30,7 +30,7 @@ async function restoreRooms(){
   const q='/rest/v1/influencer_games?select=code,state,expires_at&expires_at=gt.'+encodeURIComponent(new Date().toISOString())+'&limit=200';
   for(const row of await (await sb(q)).json()){
    const r=row.state;if(!r||!r.code)continue;
-   r.media=new Map();r.mediaBytes=0;r.createdAt=r.createdAt||Date.now();r.expiresAt=Date.parse(row.expires_at);
+   r.media=new Map();r.mediaBytes=Number.isFinite(r.mediaBytes)?r.mediaBytes:0;r.createdAt=r.createdAt||Date.now();r.expiresAt=Date.parse(row.expires_at);
    migrateRoom(r);rooms.set(r.code,r);
   }
   console.log('Restored '+rooms.size+' games');
@@ -64,7 +64,7 @@ const POST_PROMPTS=["Post a behind-the-scenes update about your influencer routi
 function makePostPrompts(duration,mode='quick'){return ['Write your first introduction post. Tell the feed who you are, what you post about, and why people should follow you.',...[...POST_PROMPTS].sort(()=>Math.random()-.5).slice(0,mode==='event'?Math.ceil(duration/30)-1:duration/5)];}
 const PERSONAS=['Beauty Guru','Wellness Expert','Lifestyle Influencer','Fitness Personality','Family Vlogger','Luxury Influencer','Conspiracy Creator','Aspiring Celebrity'];
 const BASE={followers:100,credibility:50,earnings:0,notoriety:0};
-function stats(r,p){const posts=r.posts.filter(x=>x.owner===p.id||x.owner===p.token),likes=posts.reduce((n,x)=>n+(x.likes||[]).filter(id=>id!==p.id&&id!==p.token).length,0),comments=posts.reduce((n,x)=>n+new Set((x.comments||[]).map(c=>c.playerId).filter(id=>id&&id!==p.id)).size,0);return {followers:Math.max(0,100+posts.length*40+likes*80+comments*30+(p.bonus?.followers||0)),credibility:Math.max(0,Math.min(100,50+likes*3+comments-posts.length*2+(p.bonus?.credibility||0))),earnings:Math.max(0,posts.length*25+likes*15+comments*5+(p.bonus?.earnings||0)),notoriety:Math.max(0,posts.length*5+likes*4+comments*2+(p.bonus?.notoriety||0))};}
+function stats(r,p){const posts=r.posts.filter(x=>x.owner===p.id||x.owner===p.token),scoredPosts=posts.filter((post,i)=>posts.slice(0,i).filter(x=>x.challengeRound===post.challengeRound).length<2),likes=posts.reduce((n,x)=>n+(x.likes||[]).filter(id=>id!==p.id&&id!==p.token).length,0),comments=posts.reduce((n,x)=>n+new Set((x.comments||[]).map(c=>c.playerId).filter(id=>id&&id!==p.id)).size,0);return {followers:Math.max(0,100+scoredPosts.length*40+likes*80+comments*30+(p.bonus?.followers||0)),credibility:Math.max(0,Math.min(100,50+likes*3+comments-scoredPosts.length*2+(p.bonus?.credibility||0))),earnings:Math.max(0,scoredPosts.length*25+likes*15+comments*5+(p.bonus?.earnings||0)),notoriety:Math.max(0,scoredPosts.length*5+likes*4+comments*2+(p.bonus?.notoriety||0))};}
 function resolveWinner(r){const tally={};for(const id of Object.values(r.finalVotes))tally[id]=(tally[id]||0)+1;return [...r.players].sort((a,b)=>(tally[b.id]||0)-(tally[a.id]||0)||stats(r,b).followers-stats(r,a).followers||a.id.localeCompare(b.id))[0]?.name||null;}
 const EVENTS=[
 {title:'A BRAND WANTS YOU',body:'A suspicious energy drink offers a paid partnership. Do you take the money?',options:[{label:'TAKE THE DEAL',delta:{earnings:450,followers:120,credibility:-14,notoriety:10}},{label:'TURN IT DOWN',delta:{credibility:14,followers:35}}]},
@@ -78,6 +78,8 @@ const PERSONA_BONUS={'Beauty Guru':{earnings:50},'Wellness Expert':{credibility:
 function eventFor(r){return EVENTS[(r.eventSeed+r.round)%EVENTS.length];}
 function addStats(p,delta){for(const [k,v] of Object.entries(delta)){p.bonus[k]=(p.bonus[k]||0)+v;}}
 const rooms=new Map();
+const activityCooldown=new Map();
+function canAct(r,player,kind,interval){const key=r.code+':'+player+':'+kind,now=Date.now();if(now-(activityCooldown.get(key)||0)<interval)return false;activityCooldown.set(key,now);if(activityCooldown.size>20000)for(const [k,t] of activityCooldown)if(now-t>600000)activityCooldown.delete(k);return true;}
 const sessions=new Map();
 const MAX_ROOMS=200;
 const ROOM_TTL=24*60*60*1000;
@@ -102,12 +104,12 @@ app.post('/api/upload/:code',(req,res)=>{upload.single('media')(req,res,async er
  const r=rooms.get(String(req.params.code).toUpperCase());if(!r)return res.status(404).json({error:'Game no longer active'});
  if(!req.file)return res.status(400).json({error:'Select a photo or video (8 MB max).'});
  if(r.status!=='live'||!r.players.some(p=>p.token===req.body?.token))return res.status(403).json({error:'Join an active game to upload media.'});
- if(r.mediaBytes+req.file.size>MAX_MEDIA_BYTES)return res.status(413).json({error:'Room media limit reached (48 MB).'});
+ if(r.mediaBytes+req.file.size>MAX_MEDIA_BYTES)return res.status(413).json({error:'Room media limit reached (512 MB).'});
  const id=generateCode()+generateCode();
  try{
   if(PERSIST)await sb('/storage/v1/object/game-media/'+r.code+'/'+id,{method:'POST',headers:{'Content-Type':req.file.mimetype},body:req.file.buffer});
   else r.media.set(id,{type:req.file.mimetype,data:req.file.buffer});
-  r.mediaBytes+=req.file.size;
+  r.mediaBytes+=req.file.size;saveRoom(r).catch(e=>console.error('Media usage save failed',e.message));
   res.json({url:'/api/media/'+r.code+'/'+id,type:req.file.mimetype.startsWith('video/')?'video':'image'});
  }catch(e){console.error('Upload failed',e.message);res.status(503).json({error:'Media storage unavailable. '+(e.message.startsWith('Supabase ')?e.message:'Connection error: '+e.message).slice(0,260)});}
  });});
@@ -117,14 +119,14 @@ socket.on('join',({code,name,token,persona},reply)=>{const r=rooms.get(safe(code
 socket.on('watch',({code},reply)=>{const r=rooms.get(safe(code).toUpperCase());if(!r)return reply?.({error:'Game not found'});socket.join(r.code);reply?.({ok:true});emit(r,false);});
 socket.on('host',({code,key,action,minutes,kind,message},reply)=>{const r=rooms.get(safe(code).toUpperCase());if(!r||r.key!==key)return reply?.({error:'Invalid host key'});if(action==='surprise'){if(r.status!=='live')return reply?.({error:'Start the game before sending a surprise.'});if(!['challenge','request'].includes(kind))return reply?.({error:'Choose a surprise type.'});const body=String(message||'').trim().slice(0,300);if(body.length<3)return reply?.({error:'Write a request of at least 3 characters.'});r.surprise={id:generateCode()+generateCode(),kind,text:body,created:Date.now()};emit(r);return reply?.({ok:true});}if(action==='clearSurprise'){if(r.status!=='live')return reply?.({error:'No active game.'});r.surprise=null;emit(r);return reply?.({ok:true});}if(action==='final'&&r.status!=='live')return reply?.({error:'Start the game before opening the final vote.'});if(action==='start'&&r.status==='lobby'){startRoom(r,Date.now());}if(action==='next'&&r.status==='live'){r.round=Math.min(r.round+1,r.challenges.length-1);r.roundEndsAt=Math.min(r.endsAt,Date.now()+(r.mode==='event'?30:5)*60*1000);}if(action==='final'&&r.status==='live'){r.status='final';r.surprise=null;r.roundEndsAt=0;r.voteEndsAt=Date.now()+(r.mode==='event'?10*60*1000:90*1000);}if(action==='extend'&&r.mode==='event'&&r.status==='live'){const extension=[30,60].includes(Number(minutes))?Number(minutes):30;r.endsAt+=extension*60*1000;r.duration+=extension;const targetCount=Math.ceil((r.endsAt-(r.startedAt||Date.now()))/(30*60*1000));while(r.challenges.length<targetCount){r.challenges.push(POST_PROMPTS[(r.challenges.length-1)%POST_PROMPTS.length]);r.postPrompts.push(POST_PROMPTS[(r.postPrompts.length-1)%POST_PROMPTS.length]);}}if(action==='reset'){r.status='lobby';r.scheduledStart=0;r.round=0;r.roundEndsAt=0;r.endsAt=0;r.startedAt=0;r.challenges=makeChallenges(r.duration,r.mode);r.postPrompts=makePostPrompts(r.duration,r.mode);r.posts=[{id:'WELCOME',author:'THE ALGORITHM',persona:'Official account',owner:'system',text:'Welcome to the feed. Build your following, post your most convincing influencer content, and see who survives the algorithm. Your moment starts now. ✨',media:null,likes:[],comments:[],created:Date.now(),pinned:true}];r.media=new Map();r.mediaBytes=0;r.finalVotes={};r.winner=null;r.voteEndsAt=0;r.surprise=null;r.eventSeed=Math.floor(Math.random()*EVENTS.length);for(const p of r.players){p.bonus={...PERSONA_BONUS[p.persona]};p.eventRounds=[];}}emit(r);reply?.({ok:true});});
 socket.on('eventChoice',({choice},reply)=>{const r=rooms.get(socket.data.room);const p=r?.players.find(x=>x.token===socket.data.token);if(!r||r.status!=='live'||!p)return reply?.({error:'Game not active'});p.eventRounds=p.eventRounds||[];if(p.eventRounds.includes(r.round))return reply?.({error:'Already decided this round'});const opt=eventFor(r).options[Number(choice)];if(!opt)return reply?.({error:'Invalid choice'});p.eventRounds.push(r.round);addStats(p,opt.delta);emit(r);reply?.({ok:true});});
-socket.on('post',({text,media},reply)=>{const r=rooms.get(socket.data.room);if(!r||r.status!=='live'||!r.players.some(p=>p.token===socket.data.token))return reply?.({error:'Game not live'});const t=safe(text).trim();if(!t&&!media)return reply?.({error:'Add text or media'});if(media&&(!String(media.url||'').startsWith('/api/media/'+r.code+'/')||!['image','video'].includes(media.type)))return reply?.({error:'Invalid media'});if(media&&!PERSIST&&!r.media.has(String(media.url).split('/').pop()))return reply?.({error:'Uploaded media expired. Please select it again.'});r.posts.unshift({id:generateCode()+generateCode(),author:socket.data.name,persona:r.players.find(p=>p.token===socket.data.token)?.persona||'Influencer',owner:r.players.find(p=>p.token===socket.data.token).id,text:t,media:media||null,likes:[],comments:[],challengeRound:r.round,created:Date.now()});emit(r);reply?.({ok:true});});
+socket.on('post',({text,media},reply)=>{const r=rooms.get(socket.data.room);if(!r||r.status!=='live'||!r.players.some(p=>p.token===socket.data.token))return reply?.({error:'Game not live'});const t=safe(text).trim();if(!t&&!media)return reply?.({error:'Add text or media'});if(!canAct(r,socket.data.token,'post',15000))return reply?.({error:'Please wait 15 seconds before posting again.'});if(media&&(!String(media.url||'').startsWith('/api/media/'+r.code+'/')||!['image','video'].includes(media.type)))return reply?.({error:'Invalid media'});if(media&&!PERSIST&&!r.media.has(String(media.url).split('/').pop()))return reply?.({error:'Uploaded media expired. Please select it again.'});r.posts.unshift({id:generateCode()+generateCode(),author:socket.data.name,persona:r.players.find(p=>p.token===socket.data.token)?.persona||'Influencer',owner:r.players.find(p=>p.token===socket.data.token).id,text:t,media:media||null,likes:[],comments:[],challengeRound:r.round,created:Date.now()});emit(r);reply?.({ok:true});});
 socket.on('like',({id})=>{const r=rooms.get(socket.data.room);if(!r||r.status!=='live'||!socket.data.token)return;const p=r.posts.find(x=>x.id===id);if(!p)return;const publicId=r.players.find(x=>x.token===socket.data.token)?.id;if(!publicId)return;p.likes.includes(publicId)?p.likes=p.likes.filter(x=>x!==publicId):p.likes.push(publicId);emit(r);});
 socket.on('comment',({id,text},reply)=>{
  const r=rooms.get(socket.data.room);
  if(!r||r.status!=='live'||!socket.data.token)return reply?.({error:'Game not active'});
  const post=r.posts.find(p=>p.id===id);
  const message=String(text||'').trim().slice(0,240);
- if(!post||!message)return reply?.({error:'Write a comment first'});
+ if(!post||!message)return reply?.({error:'Write a comment first'});if(!canAct(r,socket.data.token,'comment',3000))return reply?.({error:'Please wait 3 seconds before commenting again.'});
  if((post.comments||[]).length>=100)return reply?.({error:'Comment limit reached'});
  post.comments=post.comments||[];
  const commenter=r.players.find(p=>p.token===socket.data.token);if(!commenter)return reply?.({error:'Player not found'});
