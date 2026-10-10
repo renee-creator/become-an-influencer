@@ -7,7 +7,7 @@ const server=fs.readFileSync(path.join(__dirname,'..','server.js'),'utf8');
 const client=fs.readFileSync(path.join(__dirname,'..','public','app.js'),'utf8');
 test('server and browser scripts parse',()=>{new Function(server);new Function(client);});
 const from=(start,end)=>{const a=server.indexOf(start),b=server.indexOf(end,a);assert.ok(a>=0&&b>a,'Missing '+start);return server.slice(a,b);};
-const stats=new Function(from('function stats(','function resolveWinner(')+'return stats;')();
+const stats=new Function(from('function postEngagement(','function resolveWinner(')+'return stats;')();
 const owner={id:'player-a',token:'secret-a',name:'Same',bonus:{}};
 const other={id:'player-b',token:'secret-b',name:'Same',bonus:{}};
 const post=(round,likes=[],comments=[])=>({owner:owner.id,challengeRound:round,likes,comments});
@@ -20,7 +20,7 @@ test('host reset uses a second tap',()=>{assert.match(client,/resetArmedUntil=no
 test('uploads require an active player',()=>{assert.match(server,/p\.token===req\.body\?\.token/);assert.match(client,/fd\.append\('token',playerToken/);});
 test('surprise announcements and scheduled event extensions exist',()=>{assert.match(server,/action==='surprise'/);assert.match(server,/r\.endsAt\+=extension\*60\*1000/);assert.match(client,/EXTEND 30 MINUTES/);});
 
-test('free-plan media cap allows up to 900 MB per game',()=>{assert.match(server,/MAX_MEDIA_BYTES=900\*1024\*1024/);assert.match(server,/const mediaLimit=!PERSIST\?48\*1024\*1024:MAX_MEDIA_BYTES/);});
+test('free-plan media cap allows up to 250 MB per game',()=>{assert.match(server,/MAX_MEDIA_BYTES=250\*1024\*1024/);assert.match(server,/const mediaLimit=!PERSIST\?48\*1024\*1024:MAX_MEDIA_BYTES/);});
 test('finished games delete Supabase files and keep the winner',()=>{assert.match(server,/async function deleteRoomMedia\(code\)/);assert.match(server,/async function finishRoomMedia\(r\)/);assert.match(server,/r\.status='done';r\.winner=resolveWinner\(r\)/);assert.match(server,/finishRoomMedia\(r\)\.catch/);assert.match(server,/for\(const post of r\.posts\)post\.media=null/);});
 test('cleanup retries and removes expired rooms only after media deletion',()=>{assert.match(server,/if\(r\.status==='done'&&!r\.mediaCleanedAt\)await finishRoomMedia\(r\)/);assert.match(server,/await deleteRoomMedia\(row\.code\)/);});
 
