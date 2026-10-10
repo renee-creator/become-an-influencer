@@ -56,7 +56,7 @@ let nav='<div class="nav"><button class="'+(tab==='feed'?'alt':'')+'" onclick="s
 let content='';
 if(state.status==='done')content=finalPanel();
 else if(state.status==='lobby')content='<div class="card lime"><h2>YOU\'RE IN.</h2><p>Waiting for the host to start.</p><strong>'+state.players.length+' players joined</strong></div>';
-else if(state.status==='final')content='<div class="card lime"><h2>VOTE FOR THE ULTIMATE INFLUENCER.</h2><p>You cannot vote for yourself.</p>'+state.players.filter(p=>p.id!==playerId).map(p=>'<button onclick="vote(\''+p.id+'\')">'+esc(p.name)+'</button>').join('')+'</div>';
+else if(state.status==='final')content='<div class="card lime"><h2>VOTE FOR THE ULTIMATE INFLUENCER.</h2><p>You cannot vote for yourself.</p><p id="vote-feedback" aria-live="polite"></p>'+state.players.filter(p=>p.id!==playerId).map(p=>'<button onclick="vote(\''+p.id+'\')">'+esc(p.name)+'</button>').join('')+'</div>';
 else if(tab==='create')content='<div class="card"><h2>POST SOMETHING.</h2><p>Caption, photo, or video with original sound. No challenge required.</p><textarea id="caption" maxlength="300" placeholder="Your next viral moment…">'+esc(draft)+'</textarea><input id="media" type="file" accept="image/*,video/*" onchange="uploadFile()"><div class="small" id="upload-status">'+(uploaded?'Media ready':'Photos and videos with sound · 8 MB max')+'</div><button onclick="post()">PUBLISH ↗</button></div>';
 else if(tab==='challenge')content=countdown()+'<button onclick="setTab(\'create\')">CREATE CHALLENGE POST</button>';
 else content=feed();
