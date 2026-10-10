@@ -22,3 +22,16 @@ select{width:100%;padding:12px;margin:8px 0 13px;border:2px solid #181818;border
 .projector-feed .post{font-size:clamp(15px,1.5vw,23px);margin:0;text-align:left}
 .projector-feed .post img,.projector-feed .post video{width:100%;max-height:360px;object-fit:contain}
 @media(max-width:680px){.projector-layout{grid-template-columns:140px minmax(0,1fr)}.projector-sidebar{padding:8px}.projector-qr{width:120px}.projector-sidebar .code{font-size:24px}.projector-stream{padding:10px}.projector-stream-title span{display:none}.projector-feed .feed{grid-template-columns:1fr}}
+
+/* Live conversation under each feed post */
+.comments{margin-top:8px}
+.comment{font-size:.85em;margin:6px 0;padding:7px 9px;background:#F5F1E8;border-radius:5px}
+.comment-compose{display:flex;align-items:center;gap:6px;margin-top:10px}
+.comment-compose input{min-width:0;flex:1;margin:0;padding:9px}
+.comment-compose button{margin:0;flex:none;font-size:12px;padding:9px}
+.projector .comment{font-size:.72em}
+.projector-leaderboard{border-top:2px solid #181818;padding-top:12px;margin-top:8px;text-align:left}
+.projector-leaderboard>strong{font-size:clamp(14px,1.5vw,22px)}
+.projector-rank{display:flex;flex-direction:column;border-bottom:1px solid #18181844;padding:8px 0;gap:3px}
+.projector-rank b{font-size:clamp(13px,1.2vw,19px)}
+.projector-rank span{font-size:clamp(11px,1vw,16px)}
