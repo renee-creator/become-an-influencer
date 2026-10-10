@@ -3,6 +3,53 @@ const app=express(),server=http.createServer(app),io=new Server(server,{maxHttpB
 app.use(express.static(path.join(__dirname,'public')));app.use(express.json());
 const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:8*1024*1024},fileFilter:(req,f,cb)=>{const allowed=/^(image\/(jpeg|png|webp|gif)|video\/(mp4|webm|quicktime))$/.test(f.mimetype);cb(allowed?null:new Error('Unsupported file type'),allowed);}});
 const MAX_MEDIA_BYTES=48*1024*1024;
+
+const SB_URL=(process.env.SUPABASE_URL||'').replace(/\/$/,'');
+const SB_KEY=process.env.SUPABASE_SERVICE_ROLE_KEY||'';
+const PERSIST=!!(SB_URL&&SB_KEY);
+async function sb(url,options={}){
+ const response=await fetch(SB_URL+url,{...options,headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,...options.headers}});
+ if(!response.ok)throw Error('Supabase '+response.status+': '+(await response.text()).slice(0,200));
+ return response;
+}
+const saves=new Map();
+function saveRoom(r){
+ if(!PERSIST)return Promise.resolve();
+ const state={...r,media:undefined,mediaBytes:undefined};
+ const prior=saves.get(r.code)||Promise.resolve();
+ const task=prior.catch(()=>{}).then(()=>sb('/rest/v1/influencer_games?on_conflict=code',{method:'POST',headers:{'Content-Type':'application/json',Prefer:'resolution=merge-duplicates'},body:JSON.stringify({code:r.code,state,created_at:new Date(r.createdAt).toISOString(),expires_at:new Date(r.expiresAt).toISOString()})})).catch(e=>console.error('Save failed',r.code,e.message));
+ saves.set(r.code,task);
+ task.finally(()=>{if(saves.get(r.code)===task)saves.delete(r.code);});
+ return task;
+}
+async function restoreRooms(){
+ if(!PERSIST){console.warn('Supabase not configured; rooms are temporary');return;}
+ try{
+  const q='/rest/v1/influencer_games?select=code,state,expires_at&expires_at=gt.'+encodeURIComponent(new Date().toISOString())+'&limit=200';
+  for(const row of await (await sb(q)).json()){
+   const r=row.state;if(!r||!r.code)continue;
+   r.media=new Map();r.mediaBytes=0;r.createdAt=r.createdAt||Date.now();r.expiresAt=Date.parse(row.expires_at);
+   rooms.set(r.code,r);
+  }
+  console.log('Restored '+rooms.size+' games');
+ }catch(e){console.error('Room restoration failed',e.message);}
+}
+async function purgeExpired(){
+ const now=Date.now();
+ for(const [code,r] of rooms)if(r.expiresAt<=now){rooms.delete(code);io.to(code).emit('expired');}
+ if(!PERSIST)return;
+ try{
+  const q='/rest/v1/influencer_games?select=code&expires_at=lte.'+encodeURIComponent(new Date().toISOString());
+  const rows=await (await sb(q)).json();
+  for(const row of rows){
+   const response=await sb('/storage/v1/object/list/game-media',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prefix:row.code+'/',limit:1000})});
+   const objects=await response.json();
+   if(objects.length)await sb('/storage/v1/object/game-media',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({prefixes:objects.map(o=>row.code+'/'+o.name)})});
+  }
+  await sb('/rest/v1/influencer_games?expires_at=lte.'+encodeURIComponent(new Date().toISOString()),{method:'DELETE'});
+ }catch(e){console.error('Cleanup failed',e.message);}
+}
+
 const PROMPTS=[
 ['Create a lifestyle brand around your most questionable habit.','Introduce your influencer persona and invent a wildly specific niche.','Announce your rise to fame with a completely unnecessary origin story.','Reveal the bizarre daily ritual that makes you iconic.','Launch a personal brand built around something nobody asked for.','Introduce your followers to your absurd signature catchphrase.'],
 ['Pitch a wellness trend with absolutely no scientific basis.','Promote an overpriced product that solves an imaginary problem.','Invent a sponsorship for the least glamorous object in your home.','Announce a luxury collaboration with an unlikely brand.','Sell your followers a premium version of something free.','Post a dramatic unboxing of an ordinary household item.'],
@@ -30,23 +77,44 @@ const rooms=new Map();
 const sessions=new Map();
 const MAX_ROOMS=200;
 const ROOM_TTL=24*60*60*1000;
-setInterval(()=>{const now=Date.now();for(const [id,r] of rooms){if(now-r.lastActivity>ROOM_TTL){rooms.delete(id);}}},60*60*1000).unref();const generateCode=()=>Math.random().toString(36).slice(2,8).toUpperCase();
+setInterval(()=>{purgeExpired().catch(console.error);},60*60*1000).unref();const generateCode=()=>Math.random().toString(36).slice(2,8).toUpperCase();
 const safe=s=>String(s||'').slice(0,300);
-function emit(r){r.lastActivity=Date.now();io.to(r.code).emit('state',{code:r.code,status:r.status,players:r.players.map(p=>({id:p.id,name:p.name,persona:p.persona,stats:stats(r,p),eventRounds:p.eventRounds||[]})),posts:r.posts,challenges:r.challenges,postPrompts:r.postPrompts,round:r.round,duration:r.duration,endsAt:r.endsAt,roundEndsAt:r.roundEndsAt||0,finalVotes:r.finalVotes,winner:r.winner,event:r.status==='live'?{title:eventFor(r).title,body:eventFor(r).body,options:eventFor(r).options.map(x=>({label:x.label}))}:null,voteEndsAt:r.voteEndsAt||0});}
-app.post('/api/create',async(req,res)=>{const duration=[15,30,60].includes(Number(req.body?.duration))?Number(req.body.duration):15;if(rooms.size>=MAX_ROOMS)return res.status(503).json({error:'Room capacity reached'});let c;do{c=generateCode()}while(rooms.has(c));let key=generateCode()+generateCode();const r={code:c,key,lastActivity:Date.now(),players:[],posts:[],duration,challenges:makeChallenges(duration),postPrompts:makePostPrompts(duration),round:0,status:'lobby',endsAt:0,roundEndsAt:0,finalVotes:{},winner:null,media:new Map(),mediaBytes:0,eventSeed:Math.floor(Math.random()*EVENTS.length),voteEndsAt:0};rooms.set(c,r);res.json({code:c,key});});
+function emit(r){r.lastActivity=Date.now();saveRoom(r);io.to(r.code).emit('state',{code:r.code,status:r.status,players:r.players.map(p=>({id:p.id,name:p.name,persona:p.persona,stats:stats(r,p),eventRounds:p.eventRounds||[]})),posts:r.posts,challenges:r.challenges,postPrompts:r.postPrompts,round:r.round,duration:r.duration,endsAt:r.endsAt,roundEndsAt:r.roundEndsAt||0,finalVotes:r.finalVotes,winner:r.winner,event:r.status==='live'?{title:eventFor(r).title,body:eventFor(r).body,options:eventFor(r).options.map(x=>({label:x.label}))}:null,voteEndsAt:r.voteEndsAt||0});}
+app.post('/api/create',async(req,res)=>{const duration=[15,30,60].includes(Number(req.body?.duration))?Number(req.body.duration):15;if(rooms.size>=MAX_ROOMS)return res.status(503).json({error:'Room capacity reached'});let c;do{c=generateCode()}while(rooms.has(c));let key=generateCode()+generateCode();const r={code:c,key,createdAt:Date.now(),expiresAt:Date.now()+ROOM_TTL,lastActivity:Date.now(),players:[],posts:[],duration,challenges:makeChallenges(duration),postPrompts:makePostPrompts(duration),round:0,status:'lobby',endsAt:0,roundEndsAt:0,finalVotes:{},winner:null,media:new Map(),mediaBytes:0,eventSeed:Math.floor(Math.random()*EVENTS.length),voteEndsAt:0};rooms.set(c,r);await saveRoom(r);res.json({code:c,key});});
 app.get('/api/room/:code',(req,res)=>{const r=rooms.get(String(req.params.code).toUpperCase());res.set('Cache-Control','no-store');res.status(r?200:404).json(r?{ok:true,code:r.code,status:r.status,players:r.players.length}:{ok:false,error:'Room not found on this server. Create a new room from the host page.'});});
 app.get('/api/qr/:code',async(req,res)=>{const r=rooms.get(req.params.code.toUpperCase());if(!r)return res.sendStatus(404);res.type('png').send(await QRCode.toBuffer((process.env.RENDER_EXTERNAL_URL||('https://'+req.get('host')))+'/?room='+r.code));});
-app.get('/api/media/:code/:id',(req,res)=>{const r=rooms.get(String(req.params.code).toUpperCase());const media=r?.media?.get(req.params.id);if(!media)return res.sendStatus(404);res.set({'Cache-Control':'public, max-age=3600','Content-Type':media.type,'X-Content-Type-Options':'nosniff'});res.send(media.data);});
-app.post('/api/upload/:code',(req,res)=>{upload.single('media')(req,res,err=>{if(err)return res.status(400).json({error:err.code==='LIMIT_FILE_SIZE'?'File too large. Maximum 8 MB.':err.message});const r=rooms.get(String(req.params.code).toUpperCase());if(!r)return res.status(404).json({error:'Game no longer active'});if(!req.file)return res.status(400).json({error:'Select a supported photo or video (8 MB max).'});if(r.mediaBytes+req.file.size>MAX_MEDIA_BYTES)return res.status(413).json({error:'Room media limit reached (48 MB).'});const id=generateCode()+generateCode();r.media.set(id,{type:req.file.mimetype,data:req.file.buffer});r.mediaBytes+=req.file.size;res.json({url:'/api/media/'+r.code+'/'+id,type:req.file.mimetype.startsWith('video/')?'video':req.file.mimetype.startsWith('audio/')?'audio':'image'});});});
+
+app.get('/api/media/:code/:id',async(req,res)=>{
+ const code=String(req.params.code).toUpperCase(),id=String(req.params.id);
+ const r=rooms.get(code);if(!r||!/^[A-Z0-9]+$/.test(id))return res.sendStatus(404);
+ if(!PERSIST){const m=r.media.get(id);if(!m)return res.sendStatus(404);res.type(m.type).send(m.data);return;}
+ try{const response=await sb('/storage/v1/object/authenticated/game-media/'+code+'/'+id);
+  res.set({'Cache-Control':'private, max-age=60','Content-Type':response.headers.get('content-type')||'application/octet-stream','X-Content-Type-Options':'nosniff'});
+  res.send(Buffer.from(await response.arrayBuffer()));
+ }catch(e){res.status(404).send('Media unavailable');}
+});
+app.post('/api/upload/:code',(req,res)=>{upload.single('media')(req,res,async err=>{
+ if(err)return res.status(400).json({error:err.code==='LIMIT_FILE_SIZE'?'File too large. Maximum 8 MB.':err.message});
+ const r=rooms.get(String(req.params.code).toUpperCase());if(!r)return res.status(404).json({error:'Game no longer active'});
+ if(!req.file)return res.status(400).json({error:'Select a photo or video (8 MB max).'});
+ if(r.mediaBytes+req.file.size>MAX_MEDIA_BYTES)return res.status(413).json({error:'Room media limit reached (48 MB).'});
+ const id=generateCode()+generateCode();
+ try{
+  if(PERSIST)await sb('/storage/v1/object/game-media/'+r.code+'/'+id,{method:'POST',headers:{'Content-Type':req.file.mimetype},body:req.file.buffer});
+  else r.media.set(id,{type:req.file.mimetype,data:req.file.buffer});
+  r.mediaBytes+=req.file.size;
+  res.json({url:'/api/media/'+r.code+'/'+id,type:req.file.mimetype.startsWith('video/')?'video':'image'});
+ }catch(e){console.error('Upload failed',e.message);res.status(503).json({error:'Media storage unavailable'});}
+ });});
 io.on('connection',socket=>{
 socket.on('join',({code,name,token,persona},reply)=>{const r=rooms.get(safe(code).toUpperCase());if(!r)return reply({error:'Game not found'});const n=safe(name).trim().slice(0,28);const chosen=PERSONAS.includes(persona)?persona:'Lifestyle Influencer';if(!n)return reply({error:'Enter a name'});if(r.players.length>=100&&!r.players.some(x=>x.token===token))return reply({error:'Room full'});socket.join(r.code);socket.data.room=r.code;socket.data.name=n;let p=token&&r.players.find(x=>x.token===token);if(p){p.id=socket.id;p.name=n;p.persona=p.persona||chosen;p.bonus=p.bonus||{...PERSONA_BONUS[p.persona]};}else{token=generateCode()+generateCode()+generateCode();p={id:socket.id,name:n,token,persona:chosen,bonus:{...PERSONA_BONUS[chosen]},eventRounds:[]};r.players.push(p);}socket.data.token=token;reply({ok:true,id:socket.id,token});emit(r);});
 socket.on('watch',({code},reply)=>{const r=rooms.get(safe(code).toUpperCase());if(!r)return reply?.({error:'Game not found'});socket.join(r.code);reply?.({ok:true});emit(r);});
 socket.on('host',({code,key,action},reply)=>{const r=rooms.get(safe(code).toUpperCase());if(!r||r.key!==key)return reply?.({error:'Invalid host key'});if(action==='start'&&r.status==='lobby'){r.status='live';r.round=0;r.endsAt=Date.now()+r.duration*60*1000;r.roundEndsAt=Date.now()+5*60*1000;}if(action==='next'&&r.status==='live'){r.round=Math.min(r.round+1,r.challenges.length-1);r.roundEndsAt=Math.min(r.endsAt,Date.now()+5*60*1000);}if(action==='final'&&r.status==='live'){r.status='final';r.roundEndsAt=0;r.voteEndsAt=Date.now()+90*1000;}if(action==='reset'){r.status='lobby';r.round=0;r.roundEndsAt=0;r.endsAt=0;r.challenges=makeChallenges(r.duration);r.postPrompts=makePostPrompts(r.duration);r.posts=[];r.media=new Map();r.mediaBytes=0;r.finalVotes={};r.winner=null;r.voteEndsAt=0;r.eventSeed=Math.floor(Math.random()*EVENTS.length);for(const p of r.players){p.bonus={...PERSONA_BONUS[p.persona]};p.eventRounds=[];}}emit(r);reply?.({ok:true});});
 socket.on('eventChoice',({choice},reply)=>{const r=rooms.get(socket.data.room);const p=r?.players.find(x=>x.token===socket.data.token);if(!r||r.status!=='live'||!p)return reply?.({error:'Game not active'});p.eventRounds=p.eventRounds||[];if(p.eventRounds.includes(r.round))return reply?.({error:'Already decided this round'});const opt=eventFor(r).options[Number(choice)];if(!opt)return reply?.({error:'Invalid choice'});p.eventRounds.push(r.round);addStats(p,opt.delta);emit(r);reply?.({ok:true});});
-socket.on('post',({text,media},reply)=>{const r=rooms.get(socket.data.room);if(!r||r.status!=='live'||!r.players.some(p=>p.token===socket.data.token))return reply?.({error:'Game not live'});const t=safe(text).trim();if(!t&&!media)return reply?.({error:'Add text or media'});if(media&&(!String(media.url||'').startsWith('/api/media/'+r.code+'/')||!['image','video','audio'].includes(media.type)))return reply?.({error:'Invalid media'});if(media&&!r.media.has(String(media.url).split('/').pop()))return reply?.({error:'Uploaded media expired. Please select it again.'});r.posts.unshift({id:generateCode()+generateCode(),author:socket.data.name,persona:r.players.find(p=>p.token===socket.data.token)?.persona||'Influencer',owner:socket.data.token,text:t,media:media||null,likes:[],created:Date.now()});emit(r);reply?.({ok:true});});
+socket.on('post',({text,media},reply)=>{const r=rooms.get(socket.data.room);if(!r||r.status!=='live'||!r.players.some(p=>p.token===socket.data.token))return reply?.({error:'Game not live'});const t=safe(text).trim();if(!t&&!media)return reply?.({error:'Add text or media'});if(media&&(!String(media.url||'').startsWith('/api/media/'+r.code+'/')||!['image','video'].includes(media.type)))return reply?.({error:'Invalid media'});if(media&&!PERSIST&&!r.media.has(String(media.url).split('/').pop()))return reply?.({error:'Uploaded media expired. Please select it again.'});r.posts.unshift({id:generateCode()+generateCode(),author:socket.data.name,persona:r.players.find(p=>p.token===socket.data.token)?.persona||'Influencer',owner:socket.data.token,text:t,media:media||null,likes:[],created:Date.now()});emit(r);reply?.({ok:true});});
 socket.on('like',({id})=>{const r=rooms.get(socket.data.room);if(!r||!socket.data.token)return;const p=r.posts.find(x=>x.id===id);if(!p||p.owner===socket.data.token)return;p.likes.includes(socket.data.token)?p.likes=p.likes.filter(x=>x!==socket.data.token):p.likes.push(socket.data.token);emit(r);});
 socket.on('vote',({id},reply)=>{const r=rooms.get(socket.data.room);if(!r||r.status!=='final'||!r.players.some(x=>x.id===id)||!r.players.some(x=>x.token===socket.data.token))return reply?.({error:'Invalid vote'});if(id===socket.id)return reply?.({error:'You cannot vote for yourself'});if(r.status==='done')return reply?.({error:'Voting closed'});r.finalVotes[socket.data.token]=id;const tally={};Object.values(r.finalVotes).forEach(x=>tally[x]=(tally[x]||0)+1);const best=Object.entries(tally).sort((a,b)=>b[1]-a[1])[0];r.winner=best?r.players.find(x=>x.id===best[0])?.name:null;emit(r);reply?.({ok:true});});
 socket.on('disconnect',()=>{const r=rooms.get(socket.data.room);if(!r)return;emit(r);});
 });
-setInterval(()=>{const now=Date.now();for(const r of rooms.values()){if(r.status==='final'&&now>=r.voteEndsAt){r.status='done';emit(r);continue;}if(r.status!=='live')continue;if(now>=r.endsAt){r.status='final';r.roundEndsAt=0;emit(r);}else if(now>=r.roundEndsAt){if(r.round<r.challenges.length-1){r.round++;r.roundEndsAt=Math.min(r.endsAt,now+5*60*1000);emit(r);}else{r.status='final';r.roundEndsAt=0;emit(r);}}}},1000).unref();
-app.get('/health',(req,res)=>res.json({ok:true}));server.listen(process.env.PORT||3000,()=>console.log('Influencer beta listening'));
+setInterval(()=>{const now=Date.now();for(const r of rooms.values()){if(r.status==='final'&&now>=r.voteEndsAt){r.status='done';emit(r);continue;}if(r.status!=='live')continue;if(now>=r.endsAt){r.status='final';r.roundEndsAt=0;r.voteEndsAt=now+90*1000;emit(r);}else if(now>=r.roundEndsAt){if(r.round<r.challenges.length-1){r.round++;r.roundEndsAt=Math.min(r.endsAt,now+5*60*1000);emit(r);}else{r.status='final';r.roundEndsAt=0;r.voteEndsAt=now+90*1000;emit(r);}}}},1000).unref();
+app.get('/health',(req,res)=>res.json({ok:true,persistent:PERSIST}));restoreRooms().then(()=>purgeExpired()).finally(()=>server.listen(process.env.PORT||3000,()=>console.log('Influencer beta listening')));
