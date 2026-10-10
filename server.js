@@ -13,7 +13,7 @@ async function sb(url,options={}){
  return response;
 }
 const saves=new Map();
-function migrateRoom(r){for(const p of r.players||[]){if(!p.id||!p.id.startsWith('player-'))p.id='player-'+randomUUID();}}
+function migrateRoom(r){const previous=new Map();for(const p of r.players||[]){const old=p.id;if(!p.id||!p.id.startsWith('player-'))p.id='player-'+randomUUID();previous.set(old,p.id);}for(const post of r.posts||[]){if(previous.has(post.owner))post.owner=previous.get(post.owner);}for(const [voter,target] of Object.entries(r.finalVotes||{})){if(previous.has(target))r.finalVotes[voter]=previous.get(target);}}
 
 function saveRoom(r){
  if(!PERSIST)return Promise.resolve();
