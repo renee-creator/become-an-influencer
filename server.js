@@ -104,7 +104,7 @@ app.post('/api/upload/:code',(req,res)=>{upload.single('media')(req,res,async er
   else r.media.set(id,{type:req.file.mimetype,data:req.file.buffer});
   r.mediaBytes+=req.file.size;
   res.json({url:'/api/media/'+r.code+'/'+id,type:req.file.mimetype.startsWith('video/')?'video':'image'});
- }catch(e){console.error('Upload failed',e.message);res.status(503).json({error:'Media storage unavailable. Check the game-media bucket and Supabase key in Render. '+(e.message.match(/Supabase \d+/)?.[0]||'')});}
+ }catch(e){console.error('Upload failed',e.message);res.status(503).json({error:'Media storage unavailable. '+(e.message.startsWith('Supabase ')?e.message:'Connection error: '+e.message).slice(0,260)});}
  });});
 io.on('connection',socket=>{
 socket.on('join',({code,name,token,persona},reply)=>{const r=rooms.get(safe(code).toUpperCase());if(!r)return reply({error:'Game not found'});const n=safe(name).trim().slice(0,28);const chosen=PERSONAS.includes(persona)?persona:'Lifestyle Influencer';if(!n)return reply({error:'Enter a name'});if(r.players.length>=100&&!r.players.some(x=>x.token===token))return reply({error:'Room full'});socket.join(r.code);socket.data.room=r.code;socket.data.name=n;let p=token&&r.players.find(x=>x.token===token);if(p){p.id=socket.id;p.name=n;p.persona=p.persona||chosen;p.bonus=p.bonus||{...PERSONA_BONUS[p.persona]};}else{token=generateCode()+generateCode()+generateCode();p={id:socket.id,name:n,token,persona:chosen,bonus:{...PERSONA_BONUS[chosen]},eventRounds:[]};r.players.push(p);}socket.data.token=token;reply({ok:true,id:socket.id,token});emit(r);});
