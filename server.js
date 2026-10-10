@@ -101,6 +101,7 @@ app.post('/api/upload/:code',(req,res)=>{upload.single('media')(req,res,async er
  if(err)return res.status(400).json({error:err.code==='LIMIT_FILE_SIZE'?'File too large. Maximum 8 MB.':err.message});
  const r=rooms.get(String(req.params.code).toUpperCase());if(!r)return res.status(404).json({error:'Game no longer active'});
  if(!req.file)return res.status(400).json({error:'Select a photo or video (8 MB max).'});
+ if(r.status!=='live'||!r.players.some(p=>p.token===req.body?.token))return res.status(403).json({error:'Join an active game to upload media.'});
  if(r.mediaBytes+req.file.size>MAX_MEDIA_BYTES)return res.status(413).json({error:'Room media limit reached (48 MB).'});
  const id=generateCode()+generateCode();
  try{
