@@ -48,7 +48,7 @@ async function saveSouvenir(){
   c.fillStyle='#F5F1E8';c.fillRect(0,0,1080,1440);c.fillStyle='#181818';c.fillRect(0,0,1080,160);c.fillStyle='#E8F35A';c.font='bold 53px sans-serif';c.fillText('BECOME AN INFLUENCER.',55,102);
   const scale=Math.max(980/photo.width,810/photo.height),w=photo.width*scale,h=photo.height*scale;c.save();c.beginPath();c.rect(50,205,980,810);c.clip();c.drawImage(photo,50+(980-w)/2,205+(810-h)/2,w,h);c.restore();photo.close?.();
   c.fillStyle='#2855ED';c.font='bold 56px sans-serif';c.fillText('@'+(name||'INFLUENCER').slice(0,25),55,1100);
-  c.fillStyle='#181818';c.font='30px sans-serif';const caption=(best.text||'MY INFLUENCER ERA').slice(0,150);const words=caption.split(/\\s+/);let line='',y=1170;for(const word of words){const candidate=line?line+' '+word:word;if(c.measureText(candidate).width>950&&line){c.fillText(line,55,y);y+=43;line=word;if(y>1280)break;}else line=candidate;}if(y<=1300)c.fillText(line,55,y);
+  c.fillStyle='#181818';c.font='30px sans-serif';const caption=(best.text||'MY INFLUENCER ERA').slice(0,150);const words=caption.split(/\s+/);let line='',y=1170;for(const word of words){const candidate=line?line+' '+word:word;if(c.measureText(candidate).width>950&&line){c.fillText(line,55,y);y+=43;line=word;if(y>1280)break;}else line=candidate;}if(y<=1300)c.fillText(line,55,y);
   c.fillStyle='#181818';c.fillRect(0,1340,1080,100);c.fillStyle='#E8F35A';c.font='bold 30px sans-serif';c.fillText('♥ '+(best.likes?.length||0)+'   💬 '+(best.comments?.length||0)+'   THE FAME GAME',55,1402);
   const link=document.createElement('a');link.download='influencer-souvenir-'+room+'.png';link.href=canvas.toDataURL('image/png');link.click();
  }catch(e){alert('Could not save the souvenir: '+e.message);}
