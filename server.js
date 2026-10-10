@@ -2,7 +2,7 @@ const express=require('express'),http=require('http'),{Server}=require('socket.i
 const app=express(),server=http.createServer(app),io=new Server(server,{maxHttpBufferSize:12e6});
 app.use(express.static(path.join(__dirname,'public')));app.use(express.json());
 const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:8*1024*1024},fileFilter:(req,f,cb)=>{const allowed=/^(image\/(jpeg|png|webp|gif)|video\/(mp4|webm|quicktime))$/.test(f.mimetype);cb(allowed?null:new Error('Unsupported file type'),allowed);}});
-const MAX_MEDIA_BYTES=512*1024*1024; // per-room total, including uploads before a restart
+const MAX_MEDIA_BYTES=900*1024*1024; // per-room safety cap; Supabase Free storage is shared across rooms
 
 const SB_URL=(()=>{try{const raw=(process.env.SUPABASE_URL||'').trim();const u=new URL(raw);if(u.protocol!=='https:'||!u.hostname.endsWith('.supabase.co'))throw Error('Invalid Supabase project URL');return u.origin;}catch(e){console.error('Invalid SUPABASE_URL configuration:',e.message);return '';}})();
 const SB_KEY=process.env.SUPABASE_SERVICE_ROLE_KEY||'';
@@ -36,20 +36,49 @@ async function restoreRooms(){
   console.log('Restored '+rooms.size+' games');
  }catch(e){console.error('Room restoration failed',e.message);}
 }
+// Permanently remove all uploaded media for a finished or expired room.
+const cleaningRooms=new Set();
+async function deleteRoomMedia(code){
+ if(!PERSIST)return;
+ for(let batch=0;batch<10000;batch++){
+  const response=await sb('/storage/v1/object/list/game-media',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prefix:code+'/',limit:1000,offset:0})});
+  const objects=(await response.json()).filter(o=>o.name&&o.id);
+  if(!objects.length)return;
+  await sb('/storage/v1/object/game-media',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({prefixes:objects.map(o=>code+'/'+o.name)})});
+ }
+ throw Error('Media cleanup exceeded maximum batches for '+code);
+}
+async function finishRoomMedia(r){
+ if(cleaningRooms.has(r.code)||r.mediaCleanedAt)return;
+ cleaningRooms.add(r.code);
+ try{
+  await deleteRoomMedia(r.code);
+  r.media.clear();r.mediaBytes=0;
+  r.mediaCleanedAt=Date.now();
+  // Remove media references but retain the posts, comments and final scores.
+  for(const post of r.posts)post.media=null;
+  await saveRoom(r);
+  emit(r,false);
+ }catch(e){console.error('Finished-game media cleanup failed',r.code,e.message);}
+ finally{cleaningRooms.delete(r.code);}
+}
 async function purgeExpired(){
  const now=Date.now();
+ // Finished games release media immediately; retries cover transient storage failures.
+ for(const r of rooms.values())if(r.status==='done'&&!r.mediaCleanedAt)await finishRoomMedia(r);
+ if(PERSIST){
+  try{
+   const q='/rest/v1/influencer_games?select=code&expires_at=lte.'+encodeURIComponent(new Date(now).toISOString());
+   const rows=await (await sb(q)).json();
+   for(const row of rows){
+    try{
+     await deleteRoomMedia(row.code);
+     await sb('/rest/v1/influencer_games?code=eq.'+encodeURIComponent(row.code),{method:'DELETE'});
+    }catch(e){console.error('Expired room cleanup failed',row.code,e.message);}
+   }
+  }catch(e){console.error('Cleanup failed',e.message);}
+ }
  for(const [code,r] of rooms)if(r.expiresAt<=now){rooms.delete(code);io.to(code).emit('expired');}
- if(!PERSIST)return;
- try{
-  const q='/rest/v1/influencer_games?select=code&expires_at=lte.'+encodeURIComponent(new Date().toISOString());
-  const rows=await (await sb(q)).json();
-  for(const row of rows){
-   const response=await sb('/storage/v1/object/list/game-media',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prefix:row.code+'/',limit:1000})});
-   const objects=await response.json();
-   if(objects.length)await sb('/storage/v1/object/game-media',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({prefixes:objects.map(o=>row.code+'/'+o.name)})});
-  }
-  await sb('/rest/v1/influencer_games?expires_at=lte.'+encodeURIComponent(new Date().toISOString()),{method:'DELETE'});
- }catch(e){console.error('Cleanup failed',e.message);}
 }
 
 const PROMPTS=[
@@ -88,7 +117,7 @@ const safe=s=>String(s||'').slice(0,300);
 function broadcastRoom(r,changed){r.lastActivity=Date.now();if(changed)saveRoom(r).catch(e=>console.error('Room save failed',r.code,e.message));io.to(r.code).emit('state',{code:r.code,status:r.status,players:r.players.map(p=>({id:p.id,name:p.name,persona:p.persona,stats:stats(r,p),eventRounds:p.eventRounds||[]})),posts:r.posts.map(post=>({...post,owner:post.owner?.startsWith('player-')?post.owner:(r.players.find(p=>p.token===post.owner)?.id||(post.owner==='system'?'system':null)),likes:(post.likes||[]).map(id=>r.players.find(p=>(p.token===id||p.id===id))?.id||null).filter(Boolean)})),challenges:r.challenges,postPrompts:r.postPrompts,round:r.round,duration:r.duration,mode:r.mode||'quick',scheduledStart:r.scheduledStart||0,endsAt:r.endsAt,roundEndsAt:r.roundEndsAt||0,finalVotes:Object.keys(r.finalVotes||{}).length,winner:r.status==='done'?r.winner:null,event:r.status==='live'?{title:eventFor(r).title,body:eventFor(r).body,options:eventFor(r).options.map(x=>({label:x.label}))}:null,voteEndsAt:r.voteEndsAt||0,surprise:r.surprise||null});}
 const pendingBroadcasts=new Map();
 function emit(r,changed=true){const prior=pendingBroadcasts.get(r.code);if(prior){prior.changed=prior.changed||changed;return;}const pending={changed};pendingBroadcasts.set(r.code,pending);setTimeout(()=>{pendingBroadcasts.delete(r.code);if(rooms.get(r.code)===r)broadcastRoom(r,pending.changed);},150).unref();}
-app.post('/api/create',async(req,res)=>{const mode=req.body?.mode==='event'?'event':'quick';const allowed=mode==='event'?[120,240,360,480]:[15,30,60];const duration=allowed.includes(Number(req.body?.duration))?Number(req.body.duration):allowed[0];const requestedStart=Number(req.body?.scheduledStart)||0;if(mode==='event'&&requestedStart&&(!Number.isFinite(requestedStart)||requestedStart<=Date.now()||requestedStart>Date.now()+20*60*60*1000))return res.status(400).json({error:'Scheduled start must be in the next 20 hours.'});const scheduledStart=mode==='event'?requestedStart:0;if(rooms.size>=MAX_ROOMS)return res.status(503).json({error:'Room capacity reached'});let c;do{c=generateCode()}while(rooms.has(c));let key=generateCode()+generateCode();const r={code:c,key,createdAt:Date.now(),expiresAt:Date.now()+(mode==='event'?48*60*60*1000:ROOM_TTL),lastActivity:Date.now(),players:[],posts:[{id:'WELCOME',author:'THE ALGORITHM',persona:'Official account',owner:'system',text:'Welcome to the feed. Build your following, post your most convincing influencer content, and see who survives the algorithm. Your moment starts now. ✨',media:null,likes:[],comments:[],created:Date.now(),pinned:true}],duration,mode,scheduledStart,challenges:makeChallenges(duration,mode),postPrompts:makePostPrompts(duration,mode),round:0,status:'lobby',endsAt:0,roundEndsAt:0,finalVotes:{},winner:null,media:new Map(),mediaBytes:0,eventSeed:Math.floor(Math.random()*EVENTS.length),voteEndsAt:0,surprise:null};rooms.set(c,r);try{await saveRoom(r);res.json({code:c,key});}catch(e){rooms.delete(c);res.status(503).json({error:'Could not save the new room. Please try again.'});}});
+app.post('/api/create',async(req,res)=>{const mode=req.body?.mode==='event'?'event':'quick';const allowed=mode==='event'?[120,240,360,480]:[15,30,60];const duration=allowed.includes(Number(req.body?.duration))?Number(req.body.duration):allowed[0];const requestedStart=Number(req.body?.scheduledStart)||0;if(mode==='event'&&requestedStart&&(!Number.isFinite(requestedStart)||requestedStart<=Date.now()||requestedStart>Date.now()+20*60*60*1000))return res.status(400).json({error:'Scheduled start must be in the next 20 hours.'});const scheduledStart=mode==='event'?requestedStart:0;if(rooms.size>=MAX_ROOMS)return res.status(503).json({error:'Room capacity reached'});let c;do{c=generateCode()}while(rooms.has(c));let key=generateCode()+generateCode();const r={code:c,key,createdAt:Date.now(),expiresAt:Date.now()+(mode==='event'?48*60*60*1000:ROOM_TTL),lastActivity:Date.now(),players:[],posts:[{id:'WELCOME',author:'THE ALGORITHM',persona:'Official account',owner:'system',text:'Welcome to the feed. Build your following, post your most convincing influencer content, and see who survives the algorithm. Your moment starts now. ✨',media:null,likes:[],comments:[],created:Date.now(),pinned:true}],duration,mode,scheduledStart,challenges:makeChallenges(duration,mode),postPrompts:makePostPrompts(duration,mode),round:0,status:'lobby',endsAt:0,roundEndsAt:0,finalVotes:{},winner:null,media:new Map(),mediaBytes:0,eventSeed:Math.floor(Math.random()*EVENTS.length),voteEndsAt:0,surprise:null,mediaCleanedAt:0};rooms.set(c,r);try{await saveRoom(r);res.json({code:c,key});}catch(e){rooms.delete(c);res.status(503).json({error:'Could not save the new room. Please try again.'});}});
 app.get('/api/room/:code',(req,res)=>{const r=rooms.get(String(req.params.code).toUpperCase());res.set('Cache-Control','no-store');res.status(r?200:404).json(r?{ok:true,code:r.code,status:r.status,players:r.players.length}:{ok:false,error:'Room not found on this server. Create a new room from the host page.'});});
 app.get('/api/qr/:code',async(req,res)=>{const r=rooms.get(req.params.code.toUpperCase());if(!r)return res.sendStatus(404);res.type('png').send(await QRCode.toBuffer((process.env.RENDER_EXTERNAL_URL||('https://'+req.get('host')))+'/?room='+r.code));});
 
@@ -106,7 +135,7 @@ app.post('/api/upload/:code',(req,res)=>{upload.single('media')(req,res,async er
  const r=rooms.get(String(req.params.code).toUpperCase());if(!r)return res.status(404).json({error:'Game no longer active'});
  if(!req.file)return res.status(400).json({error:'Select a photo or video (8 MB max).'});
  if(r.status!=='live'||!r.players.some(p=>p.token===req.body?.token))return res.status(403).json({error:'Join an active game to upload media.'});
- const mediaLimit=!PERSIST?48*1024*1024:r.mode==='event'?MAX_MEDIA_BYTES:128*1024*1024;
+ const mediaLimit=!PERSIST?48*1024*1024:MAX_MEDIA_BYTES;
  if(r.mediaBytes+req.file.size>mediaLimit)return res.status(413).json({error:'Room media limit reached ('+Math.round(mediaLimit/1024/1024)+' MB).'});
  const id=generateCode()+generateCode();
  try{
@@ -120,7 +149,7 @@ function startRoom(r,now){r.status='live';r.round=0;r.startedAt=now;r.scheduledS
 io.on('connection',socket=>{
 socket.on('join',({code,name,token,persona},reply)=>{const r=rooms.get(safe(code).toUpperCase());if(!r)return reply({error:'Game not found'});const n=safe(name).trim().slice(0,28);const chosen=PERSONAS.includes(persona)?persona:'Lifestyle Influencer';if(!n)return reply({error:'Enter a name'});if(r.players.length>=100&&!r.players.some(x=>x.token===token))return reply({error:'Room full'});socket.join(r.code);socket.data.room=r.code;socket.data.name=n;let p=token&&r.players.find(x=>x.token===token);if(p){p.name=n;p.persona=p.persona||chosen;p.bonus=p.bonus||{...PERSONA_BONUS[p.persona]};}else{token=generateCode()+generateCode()+generateCode();p={id:'player-'+randomUUID(),name:n,token,persona:chosen,bonus:{...PERSONA_BONUS[chosen]},eventRounds:[]};r.players.push(p);}socket.data.token=token;reply({ok:true,id:p.id,token});emit(r);});
 socket.on('watch',({code},reply)=>{const r=rooms.get(safe(code).toUpperCase());if(!r)return reply?.({error:'Game not found'});socket.join(r.code);reply?.({ok:true});emit(r,false);});
-socket.on('host',({code,key,action,minutes,kind,message},reply)=>{const r=rooms.get(safe(code).toUpperCase());if(!r||r.key!==key)return reply?.({error:'Invalid host key'});if(action==='surprise'){if(r.status!=='live')return reply?.({error:'Start the game before sending a surprise.'});if(!['challenge','request'].includes(kind))return reply?.({error:'Choose a surprise type.'});const body=String(message||'').trim().slice(0,300);if(body.length<3)return reply?.({error:'Write a request of at least 3 characters.'});r.surprise={id:generateCode()+generateCode(),kind,text:body,created:Date.now()};emit(r);return reply?.({ok:true});}if(action==='clearSurprise'){if(r.status!=='live')return reply?.({error:'No active game.'});r.surprise=null;emit(r);return reply?.({ok:true});}if(action==='final'&&r.status!=='live')return reply?.({error:'Start the game before opening the final vote.'});if(action==='start'&&r.status==='lobby'){startRoom(r,Date.now());}if(action==='next'&&r.status==='live'){r.round=Math.min(r.round+1,r.challenges.length-1);r.roundEndsAt=Math.min(r.endsAt,Date.now()+(r.mode==='event'?30:5)*60*1000);}if(action==='final'&&r.status==='live'){r.status='final';r.surprise=null;r.roundEndsAt=0;r.voteEndsAt=Date.now()+(r.mode==='event'?10*60*1000:90*1000);}if(action==='extend'&&r.mode==='event'&&r.status==='live'){const extension=[30,60].includes(Number(minutes))?Number(minutes):30;r.endsAt+=extension*60*1000;r.duration+=extension;const targetCount=Math.ceil((r.endsAt-(r.startedAt||Date.now()))/(30*60*1000));while(r.challenges.length<targetCount){r.challenges.push(POST_PROMPTS[(r.challenges.length-1)%POST_PROMPTS.length]);r.postPrompts.push(POST_PROMPTS[(r.postPrompts.length-1)%POST_PROMPTS.length]);}}if(action==='reset'){r.status='lobby';r.scheduledStart=0;r.round=0;r.roundEndsAt=0;r.endsAt=0;r.startedAt=0;r.challenges=makeChallenges(r.duration,r.mode);r.postPrompts=makePostPrompts(r.duration,r.mode);r.posts=[{id:'WELCOME',author:'THE ALGORITHM',persona:'Official account',owner:'system',text:'Welcome to the feed. Build your following, post your most convincing influencer content, and see who survives the algorithm. Your moment starts now. ✨',media:null,likes:[],comments:[],created:Date.now(),pinned:true}];r.media=new Map();r.mediaBytes=0;r.finalVotes={};r.winner=null;r.voteEndsAt=0;r.surprise=null;r.eventSeed=Math.floor(Math.random()*EVENTS.length);for(const p of r.players){p.bonus={...PERSONA_BONUS[p.persona]};p.eventRounds=[];}}emit(r);reply?.({ok:true});});
+socket.on('host',({code,key,action,minutes,kind,message},reply)=>{const r=rooms.get(safe(code).toUpperCase());if(!r||r.key!==key)return reply?.({error:'Invalid host key'});if(action==='surprise'){if(r.status!=='live')return reply?.({error:'Start the game before sending a surprise.'});if(!['challenge','request'].includes(kind))return reply?.({error:'Choose a surprise type.'});const body=String(message||'').trim().slice(0,300);if(body.length<3)return reply?.({error:'Write a request of at least 3 characters.'});r.surprise={id:generateCode()+generateCode(),kind,text:body,created:Date.now()};emit(r);return reply?.({ok:true});}if(action==='clearSurprise'){if(r.status!=='live')return reply?.({error:'No active game.'});r.surprise=null;emit(r);return reply?.({ok:true});}if(action==='final'&&r.status!=='live')return reply?.({error:'Start the game before opening the final vote.'});if(action==='start'&&r.status==='lobby'){startRoom(r,Date.now());}if(action==='next'&&r.status==='live'){r.round=Math.min(r.round+1,r.challenges.length-1);r.roundEndsAt=Math.min(r.endsAt,Date.now()+(r.mode==='event'?30:5)*60*1000);}if(action==='final'&&r.status==='live'){r.status='final';r.surprise=null;r.roundEndsAt=0;r.voteEndsAt=Date.now()+(r.mode==='event'?10*60*1000:90*1000);}if(action==='extend'&&r.mode==='event'&&r.status==='live'){const extension=[30,60].includes(Number(minutes))?Number(minutes):30;r.endsAt+=extension*60*1000;r.duration+=extension;const targetCount=Math.ceil((r.endsAt-(r.startedAt||Date.now()))/(30*60*1000));while(r.challenges.length<targetCount){r.challenges.push(POST_PROMPTS[(r.challenges.length-1)%POST_PROMPTS.length]);r.postPrompts.push(POST_PROMPTS[(r.postPrompts.length-1)%POST_PROMPTS.length]);}}if(action==='reset'){r.status='lobby';r.scheduledStart=0;r.round=0;r.roundEndsAt=0;r.endsAt=0;r.startedAt=0;r.challenges=makeChallenges(r.duration,r.mode);r.postPrompts=makePostPrompts(r.duration,r.mode);r.posts=[{id:'WELCOME',author:'THE ALGORITHM',persona:'Official account',owner:'system',text:'Welcome to the feed. Build your following, post your most convincing influencer content, and see who survives the algorithm. Your moment starts now. ✨',media:null,likes:[],comments:[],created:Date.now(),pinned:true}];r.media=new Map();r.mediaBytes=0;r.mediaCleanedAt=0;r.finalVotes={};r.winner=null;r.voteEndsAt=0;r.surprise=null;r.eventSeed=Math.floor(Math.random()*EVENTS.length);for(const p of r.players){p.bonus={...PERSONA_BONUS[p.persona]};p.eventRounds=[];}}emit(r);reply?.({ok:true});});
 socket.on('eventChoice',({choice},reply)=>{const r=rooms.get(socket.data.room);const p=r?.players.find(x=>x.token===socket.data.token);if(!r||r.status!=='live'||!p)return reply?.({error:'Game not active'});p.eventRounds=p.eventRounds||[];if(p.eventRounds.includes(r.round))return reply?.({error:'Already decided this round'});const opt=eventFor(r).options[Number(choice)];if(!opt)return reply?.({error:'Invalid choice'});p.eventRounds.push(r.round);addStats(p,opt.delta);emit(r);reply?.({ok:true});});
 socket.on('post',({text,media},reply)=>{const r=rooms.get(socket.data.room);if(!r||r.status!=='live'||!r.players.some(p=>p.token===socket.data.token))return reply?.({error:'Game not live'});const t=safe(text).trim();if(!t&&!media)return reply?.({error:'Add text or media'});if(!canAct(r,socket.data.token,'post',15000))return reply?.({error:'Please wait 15 seconds before posting again.'});if(media&&(!String(media.url||'').startsWith('/api/media/'+r.code+'/')||!['image','video'].includes(media.type)))return reply?.({error:'Invalid media'});if(media&&!PERSIST&&!r.media.has(String(media.url).split('/').pop()))return reply?.({error:'Uploaded media expired. Please select it again.'});r.posts.unshift({id:generateCode()+generateCode(),author:socket.data.name,persona:r.players.find(p=>p.token===socket.data.token)?.persona||'Influencer',owner:r.players.find(p=>p.token===socket.data.token).id,text:t,media:media||null,likes:[],comments:[],challengeRound:r.round,created:Date.now()});emit(r);reply?.({ok:true});});
 socket.on('like',({id})=>{const r=rooms.get(socket.data.room);if(!r||r.status!=='live'||!socket.data.token)return;const p=r.posts.find(x=>x.id===id);if(!p)return;const publicId=r.players.find(x=>x.token===socket.data.token)?.id;if(!publicId)return;p.likes.includes(publicId)?p.likes=p.likes.filter(x=>x!==publicId):p.likes.push(publicId);emit(r);});
@@ -139,7 +168,7 @@ socket.on('comment',({id,text},reply)=>{
 socket.on('vote',({id},reply)=>{const r=rooms.get(socket.data.room);if(!r||r.status!=='final'||!r.players.some(x=>x.id===id)||!r.players.some(x=>x.token===socket.data.token))return reply?.({error:'Invalid vote'});const voter=r.players.find(p=>p.token===socket.data.token);if(id===voter.id)return reply?.({error:'You cannot vote for yourself'});r.finalVotes[voter.id]=id;r.winner=null;emit(r);reply?.({ok:true});});
 socket.on('disconnect',()=>{const r=rooms.get(socket.data.room);if(!r)return;emit(r,false);});
 });
-setInterval(()=>{const now=Date.now();for(const r of rooms.values()){if(r.status==='lobby'&&r.mode==='event'&&r.scheduledStart&&now>=r.scheduledStart){startRoom(r,now);emit(r);continue;}if(r.status==='final'&&now>=r.voteEndsAt){r.status='done';r.winner=resolveWinner(r);emit(r);continue;}if(r.status!=='live')continue;if(now>=r.endsAt){r.status='final';r.roundEndsAt=0;r.voteEndsAt=now+(r.mode==='event'?10*60*1000:90*1000);emit(r);}else if(now>=r.roundEndsAt){if(r.round<r.challenges.length-1){r.round++;r.roundEndsAt=Math.min(r.endsAt,now+(r.mode==='event'?30:5)*60*1000);emit(r);}else{r.roundEndsAt=r.endsAt;emit(r);}}}},1000).unref();
+setInterval(()=>{const now=Date.now();for(const r of rooms.values()){if(r.status==='lobby'&&r.mode==='event'&&r.scheduledStart&&now>=r.scheduledStart){startRoom(r,now);emit(r);continue;}if(r.status==='final'&&now>=r.voteEndsAt){r.status='done';r.winner=resolveWinner(r);emit(r);finishRoomMedia(r).catch(e=>console.error('Cleanup failed',e.message));continue;}if(r.status!=='live')continue;if(now>=r.endsAt){r.status='final';r.surprise=null;r.roundEndsAt=0;r.voteEndsAt=now+(r.mode==='event'?10*60*1000:90*1000);emit(r);}else if(now>=r.roundEndsAt){if(r.round<r.challenges.length-1){r.round++;r.roundEndsAt=Math.min(r.endsAt,now+(r.mode==='event'?30:5)*60*1000);emit(r);}else{r.roundEndsAt=r.endsAt;emit(r);}}}},1000).unref();
 async function verifySupabase(){
  if(!PERSIST){console.error('Supabase check: missing or invalid configuration');return;}
  for(const [label,endpoint] of [['database','/rest/v1/influencer_games?select=code&limit=1'],['storage','/storage/v1/bucket/game-media']]){
